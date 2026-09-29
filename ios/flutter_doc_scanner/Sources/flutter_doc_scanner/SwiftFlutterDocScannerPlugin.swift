@@ -1,224 +1,284 @@
+import AVFoundation
 import Flutter
 import UIKit
 import Vision
-import VisionKit
-import PDFKit
 
-@available(iOS 13.0, *)
-public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, VNDocumentCameraViewControllerDelegate {
-   var resultChannel: FlutterResult?
-   var presentingController: VNDocumentCameraViewController?
-   var currentMethod: String?
+/// Camera + detection engine. Contract: docs/SCANNER_PHASES.md §1.2.
+public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
+    private let textures: FlutterTextureRegistry
+    private let work = DispatchQueue(label: "flutter_doc_scanner.work", qos: .userInitiated, attributes: .concurrent)
+    private var sink: FlutterEventSink?
+    private var camera: CameraEngine?
 
-   public static func register(with registrar: FlutterPluginRegistrar) {
-       let channel = FlutterMethodChannel(name: "flutter_doc_scanner", binaryMessenger: registrar.messenger())
-       let instance = SwiftFlutterDocScannerPlugin()
-       registrar.addMethodCallDelegate(instance, channel: channel)
-   }
+    init(textures: FlutterTextureRegistry) {
+        self.textures = textures
+    }
 
-   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-       if call.method == "getScanDocuments" {
-           let presentedVC: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-           self.resultChannel = result
-           self.currentMethod = call.method
-           self.presentingController = VNDocumentCameraViewController()
-           self.presentingController!.delegate = self
-           presentedVC?.present(self.presentingController!, animated: true)
-       } else if call.method == "getScannedDocumentAsImages" {
-           let presentedVC: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-           self.resultChannel = result
-           self.currentMethod = call.method
-           let arguments = call.arguments as? [String: Any]
-           let useAutomaticSinglePictureProcessing =
-               (arguments?["useAutomaticSinglePictureProcessing"] as? Bool) ?? false
+    public static func register(with registrar: FlutterPluginRegistrar) {
+        let instance = SwiftFlutterDocScannerPlugin(textures: registrar.textures())
+        registrar.addMethodCallDelegate(instance, channel: FlutterMethodChannel(name: "flutter_doc_scanner", binaryMessenger: registrar.messenger()))
+        FlutterEventChannel(name: "flutter_doc_scanner/detections", binaryMessenger: registrar.messenger()).setStreamHandler(instance)
+    }
 
-           if useAutomaticSinglePictureProcessing {
-               // New fast path: capture one picture and return immediately without review UI.
-               let controller = AutoScanViewController()
-               controller.modalPresentationStyle = .fullScreen
-               controller.onImageCaptured = { [weak self] image in
-                   guard let self = self else { return }
-                   DispatchQueue.global(qos: .userInitiated).async {
-                       do {
-                           let path = try self.saveSingleImage(image: image)
-                           DispatchQueue.main.async {
-                               self.resultChannel?([path])
-                           }
-                       } catch {
-                           DispatchQueue.main.async {
-                               self.resultChannel?(FlutterError(code: "SCAN_SAVE_ERROR", message: "Failed to save captured image", details: error.localizedDescription))
-                           }
-                       }
-                   }
-               }
-               controller.onCancel = { [weak self] in
-                   self?.resultChannel?(nil)
-               }
-               controller.onError = { [weak self] error in
-                   self?.resultChannel?(FlutterError(code: "SCAN_ERROR", message: "Failed to scan documents", details: error.localizedDescription))
-               }
-               presentedVC?.present(controller, animated: true)
-           } else {
-               self.presentingController = VNDocumentCameraViewController()
-               self.presentingController!.delegate = self
-               presentedVC?.present(self.presentingController!, animated: true)
-           }
-       } else if call.method == "getScannedDocumentAsPdf" {
-           let presentedVC: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-           self.resultChannel = result
-           self.currentMethod = call.method
-           self.presentingController = VNDocumentCameraViewController()
-           self.presentingController!.delegate = self
-           presentedVC?.present(self.presentingController!, animated: true)
-       } else {
-           result(FlutterMethodNotImplemented)
-           return
-       }
-   }
+    public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any] ?? [:]
+        switch call.method {
+        case "start":
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    guard granted else {
+                        return result(FlutterError(code: "PERMISSION_DENIED", message: "Camera permission denied", details: nil))
+                    }
+                    self.start(mode: args["mode"] as? String ?? "document", result: result)
+                }
+            }
+        case "setMode":
+            camera?.mode = args["mode"] as? String ?? "document"
+            result(nil)
+        case "setTorch":
+            camera?.setTorch(args["on"] as? Bool ?? false)
+            result(nil)
+        case "capture":
+            guard let camera else { return result(FlutterError(code: "NOT_STARTED", message: "Call start first", details: nil)) }
+            camera.capture { outcome in
+                switch outcome {
+                case .success(let url):
+                    // Re-detect on the real photo: sharper and more accurate than the preview frame.
+                    let corners = Self.detectFile(url.path, mode: camera.mode)
+                    DispatchQueue.main.async { result(["path": url.path, "corners": corners as Any]) }
+                case .failure(let error):
+                    DispatchQueue.main.async { result(FlutterError(code: "CAPTURE_FAILED", message: error.localizedDescription, details: nil)) }
+                }
+            }
+        case "analyze":
+            let path = args["path"] as? String ?? ""
+            let mode = args["mode"] as? String ?? "document"
+            work.async {
+                var out: [String: Any] = ["mode": mode]
+                switch mode {
+                case "qr", "passport", "math":
+                    if let image = DocVision.load(path, maxSize: nil) {
+                        let handler = VNImageRequestHandler(ciImage: image)
+                        if mode == "qr" { out["codes"] = DocVision.codes(handler) }
+                        else { out["lines"] = DocVision.lines(handler, accurate: true, mrzOnly: mode == "passport") }
+                    }
+                default:
+                    out["corners"] = Self.detectFile(path, mode: mode) as Any
+                }
+                DispatchQueue.main.async { result(out) }
+            }
+        case "process":
+            work.async {
+                do {
+                    let out = try DocVision.process(
+                        path: args["path"] as? String ?? "",
+                        corners: args["corners"] as? [Double],
+                        rotation: args["rotation"] as? Int ?? 0,
+                        filter: args["filter"] as? String ?? "original",
+                        outPath: args["outPath"] as? String ?? "",
+                        maxSize: args["maxSize"] as? Int
+                    )
+                    DispatchQueue.main.async { result(out) }
+                } catch {
+                    DispatchQueue.main.async { result(FlutterError(code: "FAILED", message: error.localizedDescription, details: nil)) }
+                }
+            }
+        case "stop":
+            stop()
+            result(nil)
+        case "openSettings":
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            result(nil)
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
 
-   func getDocumentsDirectory() -> URL {
-       let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-       let documentsDirectory = paths[0]
-       return documentsDirectory
-   }
+    // ID-1 cards are 85.6 × 54 mm (1.586). The range absorbs perspective tilt but starts above A4 (1.414),
+    // so a sheet of paper held square-on isn't taken for a card. Cards sit smaller in frame than pages.
+    static let cardAspect = 1.45...1.85
+    static let cardMinArea = 0.06
 
-   private func saveSingleImage(image: UIImage) throws -> String {
-       let tempDirPath = getDocumentsDirectory()
-       let currentDateTime = Date()
-       let df = DateFormatter()
-       df.dateFormat = "yyyyMMdd-HHmmss"
-       let formattedDate = df.string(from: currentDateTime)
-       let imagePath = tempDirPath.appendingPathComponent(formattedDate + "-0.jpg")
-       guard let data = image.jpegData(compressionQuality: 0.78) else {
-           throw NSError(domain: "flutter_doc_scanner", code: 1001, userInfo: [NSLocalizedDescriptionKey: "Unable to encode JPEG data."])
-       }
-       try data.write(to: imagePath, options: .atomic)
-       return imagePath.path
-   }
+    static func detectFile(_ path: String, mode: String) -> [Double]? {
+        mode == "idCard" ? DocVision.detect(path: path, minArea: cardMinArea, aspect: cardAspect) : DocVision.detect(path: path)
+    }
 
-   public func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
-       if currentMethod == "getScanDocuments" {
-           saveScannedImages(scan: scan) // Uses existing logic
-       } else if currentMethod == "getScannedDocumentAsImages" {
-           saveScannedImages(scan: scan)
-       } else if currentMethod == "getScannedDocumentAsPdf" {
-           saveScannedPdf(scan: scan)
-       }
-       presentingController?.dismiss(animated: true)
-   }
+    private func start(mode: String, result: @escaping FlutterResult) {
+        stop()
+        let engine = CameraEngine(registry: textures)
+        engine.mode = mode
+        engine.onDetection = { [weak self] event in
+            self?.sink?(event)
+        }
+        camera = engine
+        engine.start { outcome in
+            switch outcome {
+            case .success(let size):
+                result(["textureId": engine.textureId, "width": Int(size.width), "height": Int(size.height), "quarterTurns": 0])
+            case .failure(let error):
+                result(FlutterError(code: "CAMERA_FAILED", message: error.localizedDescription, details: nil))
+            }
+        }
+    }
 
-   private func saveScannedImages(scan: VNDocumentCameraScan) {
-       let tempDirPath = getDocumentsDirectory()
-       let currentDateTime = Date()
-       let df = DateFormatter()
-       df.dateFormat = "yyyyMMdd-HHmmss"
-       let formattedDate = df.string(from: currentDateTime)
-       var filenames: [String] = []
-       for i in 0 ..< scan.pageCount {
-           let page = scan.imageOfPage(at: i)
-           let url = tempDirPath.appendingPathComponent(formattedDate + "-\(i).png")
-           try? page.pngData()?.write(to: url)
-           filenames.append(url.path)
-       }
-       resultChannel?(filenames)
-   }
+    private func stop() {
+        camera?.stop()
+        camera = nil
+    }
 
-   private func saveScannedPdf(scan: VNDocumentCameraScan) {
-       let tempDirPath = getDocumentsDirectory()
-       let currentDateTime = Date()
-       let df = DateFormatter()
-       df.dateFormat = "yyyyMMdd-HHmmss"
-       let formattedDate = df.string(from: currentDateTime)
-       let pdfFilePath = tempDirPath.appendingPathComponent("\(formattedDate).pdf")
+    public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        sink = events
+        return nil
+    }
 
-       let pdfDocument = PDFDocument()
-       for i in 0 ..< scan.pageCount {
-           let pageImage = scan.imageOfPage(at: i)
-           if let pdfPage = PDFPage(image: pageImage) {
-               pdfDocument.insert(pdfPage, at: pdfDocument.pageCount)
-           }
-       }
-
-       do {
-           try pdfDocument.write(to: pdfFilePath)
-           resultChannel?(pdfFilePath.path)
-       } catch {
-           resultChannel?(FlutterError(code: "PDF_CREATION_ERROR", message: "Failed to create PDF", details: error.localizedDescription))
-       }
-   }
-
-   public func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
-       resultChannel?(nil)
-       presentingController?.dismiss(animated: true)
-   }
-
-   public func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
-       resultChannel?(FlutterError(code: "SCAN_ERROR", message: "Failed to scan documents", details: error.localizedDescription))
-       presentingController?.dismiss(animated: true)
-   }
+    public func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        sink = nil
+        return nil
+    }
 }
 
+/// AVCaptureSession feeding a Flutter texture (portrait BGRA frames), live Vision analysis and photo capture.
+final class CameraEngine: NSObject, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate, AVCapturePhotoCaptureDelegate {
+    private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "flutter_doc_scanner.session")
+    private let videoQueue = DispatchQueue(label: "flutter_doc_scanner.video")
+    private let analysisQueue = DispatchQueue(label: "flutter_doc_scanner.analysis", qos: .userInitiated)
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let photoOutput = AVCapturePhotoOutput()
+    private let lock = NSLock()
+    private weak var registry: FlutterTextureRegistry?
+    private var device: AVCaptureDevice?
+    private var latest: CVPixelBuffer?
+    private var analyzing = false // videoQueue only
+    private var photoDone: ((Result<URL, Error>) -> Void)?
 
-// import Flutter
-// import UIKit
-// import Vision
-// import VisionKit
-//
-// @available(iOS 13.0, *)
-// public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, VNDocumentCameraViewControllerDelegate {
-//    var resultChannel :FlutterResult?
-//    var presentingController: VNDocumentCameraViewController?
-//
-//   public static func register(with registrar: FlutterPluginRegistrar) {
-//     let channel = FlutterMethodChannel(name: "flutter_doc_scanner", binaryMessenger: registrar.messenger())
-//     let instance = SwiftFlutterDocScannerPlugin()
-//     registrar.addMethodCallDelegate(instance, channel: channel)
-//   }
-//
-//   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-//     if call.method == "getScanDocuments" {
-//             let presentedVC: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-//             self.resultChannel = result
-//             self.presentingController = VNDocumentCameraViewController()
-//             self.presentingController!.delegate = self
-//             presentedVC?.present(self.presentingController!, animated: true)
-//            } else {
-//             result(FlutterMethodNotImplemented)
-//             return
-//        }
-//   }
-//
-//
-//     func getDocumentsDirectory() -> URL {
-//         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-//         let documentsDirectory = paths[0]
-//         return documentsDirectory
-//     }
-//
-//     public func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
-//         let tempDirPath = self.getDocumentsDirectory()
-//         let currentDateTime = Date()
-//         let df = DateFormatter()
-//         df.dateFormat = "yyyyMMdd-HHmmss"
-//         let formattedDate = df.string(from: currentDateTime)
-//         var filenames: [String] = []
-//         for i in 0 ... scan.pageCount - 1 {
-//             let page = scan.imageOfPage(at: i)
-//             let url = tempDirPath.appendingPathComponent(formattedDate + "-\(i).png")
-//             try? page.pngData()?.write(to: url)
-//             filenames.append(url.path)
-//         }
-//         resultChannel?(filenames)
-//         presentingController?.dismiss(animated: true)
-//     }
-//
-//     public func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
-//         resultChannel?(nil)
-//         presentingController?.dismiss(animated: true)
-//     }
-//
-//     public func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
-//         resultChannel?(nil)
-//         presentingController?.dismiss(animated: true)
-//     }
-// }
+    private(set) var textureId: Int64 = 0
+    var mode = "document"
+    var onDetection: (([String: Any]) -> Void)?
+
+    init(registry: FlutterTextureRegistry) {
+        self.registry = registry
+        super.init()
+        textureId = registry.register(self)
+    }
+
+    /// Configures and starts the session; completes on the main queue with the portrait preview size.
+    func start(_ done: @escaping (Result<CGSize, Error>) -> Void) {
+        sessionQueue.async {
+            do {
+                let size = try self.configure()
+                self.session.startRunning()
+                DispatchQueue.main.async { done(.success(size)) }
+            } catch {
+                DispatchQueue.main.async { done(.failure(error)) }
+            }
+        }
+    }
+
+    private func configure() throws -> CGSize {
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        session.sessionPreset = .photo // 4:3, same field of view for preview, analysis and photo
+
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+            throw NSError(domain: "flutter_doc_scanner", code: 2, userInfo: [NSLocalizedDescriptionKey: "No back camera"])
+        }
+        self.device = device
+        let input = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(input), session.canAddOutput(videoOutput), session.canAddOutput(photoOutput) else {
+            throw NSError(domain: "flutter_doc_scanner", code: 3, userInfo: [NSLocalizedDescriptionKey: "Camera configuration failed"])
+        }
+        session.addInput(input)
+
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        session.addOutput(videoOutput)
+        session.addOutput(photoOutput)
+        photoOutput.maxPhotoQualityPrioritization = .balanced
+        for connection in [videoOutput.connection(with: .video), photoOutput.connection(with: .video)] {
+            if connection?.isVideoOrientationSupported == true { connection?.videoOrientation = .portrait }
+        }
+
+        try device.lockForConfiguration()
+        if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+        if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
+        device.unlockForConfiguration()
+
+        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        return CGSize(width: Int(min(dims.width, dims.height)), height: Int(max(dims.width, dims.height)))
+    }
+
+    func stop() {
+        registry?.unregisterTexture(textureId)
+        sessionQueue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+        }
+    }
+
+    func setTorch(_ on: Bool) {
+        guard let device, device.hasTorch, (try? device.lockForConfiguration()) != nil else { return }
+        device.torchMode = on ? .on : .off
+        device.unlockForConfiguration()
+    }
+
+    func capture(_ done: @escaping (Result<URL, Error>) -> Void) {
+        photoDone = done
+        let settings = photoOutput.availablePhotoCodecTypes.contains(.jpeg)
+            ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+            : AVCapturePhotoSettings()
+        settings.photoQualityPrioritization = .balanced
+        photoOutput.capturePhoto(with: settings, delegate: self)
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        let done = photoDone
+        photoDone = nil
+        if let error { return done?(.failure(error)) ?? () }
+        do {
+            guard let data = photo.fileDataRepresentation() else {
+                throw NSError(domain: "flutter_doc_scanner", code: 4, userInfo: [NSLocalizedDescriptionKey: "Empty photo"])
+            }
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("scans", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("cap_\(Int(Date().timeIntervalSince1970 * 1000)).jpg")
+            try data.write(to: url)
+            DispatchQueue.global(qos: .userInitiated).async { done?(.success(url)) }
+        } catch {
+            done?(.failure(error))
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lock.lock()
+        latest = buffer
+        lock.unlock()
+        registry?.textureFrameAvailable(textureId)
+
+        let mode = self.mode
+        guard !analyzing, ["document", "book", "idCard", "qr", "passport", "math"].contains(mode) else { return }
+        analyzing = true
+        analysisQueue.async {
+            let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up)
+            let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+            var event: [String: Any] = ["mode": mode]
+            switch mode {
+            case "qr": event["codes"] = DocVision.codes(handler)
+            case "passport", "math": event["lines"] = DocVision.lines(handler, accurate: false, mrzOnly: mode == "passport")
+            case "idCard":
+                event["corners"] = DocVision.detect(handler, size: size, minArea: SwiftFlutterDocScannerPlugin.cardMinArea,
+                                                    aspect: SwiftFlutterDocScannerPlugin.cardAspect) as Any
+            default: event["corners"] = DocVision.detect(handler, size: size) as Any
+            }
+            self.videoQueue.async { self.analyzing = false }
+            DispatchQueue.main.async { self.onDetection?(event) }
+        }
+    }
+
+    func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return latest.map { Unmanaged.passRetained($0) }
+    }
+}

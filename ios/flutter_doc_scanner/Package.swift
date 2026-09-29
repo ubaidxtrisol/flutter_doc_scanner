@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "flutter_doc_scanner",
     platforms: [
-        .iOS("13.0")
+        .iOS("15.0")
     ],
     products: [
         .library(name: "flutter-doc-scanner", targets: ["flutter_doc_scanner"])
