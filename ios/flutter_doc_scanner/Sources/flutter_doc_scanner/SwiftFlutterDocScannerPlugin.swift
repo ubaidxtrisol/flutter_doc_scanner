@@ -1,3 +1,4 @@
+import ARKit
 import AVFoundation
 import Flutter
 import UIKit
@@ -9,6 +10,7 @@ public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStrea
     private let work = DispatchQueue(label: "flutter_doc_scanner.work", qos: .userInitiated, attributes: .concurrent)
     private var sink: FlutterEventSink?
     private var camera: CameraEngine?
+    private static let arEvents = ArEvents()
 
     init(textures: FlutterTextureRegistry) {
         self.textures = textures
@@ -18,6 +20,8 @@ public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStrea
         let instance = SwiftFlutterDocScannerPlugin(textures: registrar.textures())
         registrar.addMethodCallDelegate(instance, channel: FlutterMethodChannel(name: "flutter_doc_scanner", binaryMessenger: registrar.messenger()))
         FlutterEventChannel(name: "flutter_doc_scanner/detections", binaryMessenger: registrar.messenger()).setStreamHandler(instance)
+        FlutterEventChannel(name: "flutter_doc_scanner/ar", binaryMessenger: registrar.messenger()).setStreamHandler(arEvents)
+        registrar.register(ArMeasureFactory(), withId: "flutter_doc_scanner/ar")
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -85,6 +89,34 @@ public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStrea
             }
         case "stop":
             stop()
+            result(nil)
+        case "arStart":
+            guard ARWorldTrackingConfiguration.isSupported else {
+                return result(FlutterError(code: "AR_UNSUPPORTED", message: "ARKit world tracking unsupported", details: nil))
+            }
+            stop() // ARKit needs the camera to itself; the session starts when Flutter creates the view
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    granted ? result(["textureId": NSNull()])
+                        : result(FlutterError(code: "PERMISSION_DENIED", message: "Camera permission denied", details: nil))
+                }
+            }
+        case "arAdd":
+            result(ArMeasureView.current?.add(at: args["at"] as? [Double]) ?? false)
+        case "arMove":
+            ArMeasureView.current?.move(args["index"] as? Int ?? -1, to: args["at"] as? [Double] ?? [])
+            result(nil)
+        case "arUndo":
+            ArMeasureView.current?.undo()
+            result(nil)
+        case "arClear":
+            ArMeasureView.current?.clear()
+            result(nil)
+        case "arTorch":
+            ArMeasureView.setTorch(args["on"] as? Bool ?? false)
+            result(nil)
+        case "arStop":
+            ArMeasureView.current?.stop()
             result(nil)
         case "openSettings":
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }

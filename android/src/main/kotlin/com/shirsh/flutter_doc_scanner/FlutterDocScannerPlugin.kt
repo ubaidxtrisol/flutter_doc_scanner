@@ -34,6 +34,8 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
 import io.flutter.view.TextureRegistry
+import com.google.ar.core.ArCoreApk
+import com.google.ar.core.exceptions.UnavailableException
 import com.google.mlkit.vision.common.InputImage
 import org.opencv.android.OpenCVLoader
 import org.opencv.core.CvType
@@ -51,6 +53,8 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
     private lateinit var context: Context
     private var binding: ActivityPluginBinding? = null
     private var sink: EventChannel.EventSink? = null
+    private var arSink: EventChannel.EventSink? = null
+    private var ar: ArMeasure? = null
     private var onPermission: ((Boolean) -> Unit)? = null
 
     private val main = Handler(Looper.getMainLooper())
@@ -70,6 +74,15 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
         textures = b.textureRegistry
         channel = MethodChannel(b.binaryMessenger, "flutter_doc_scanner").also { it.setMethodCallHandler(this) }
         events = EventChannel(b.binaryMessenger, "flutter_doc_scanner/detections").also { it.setStreamHandler(this) }
+        EventChannel(b.binaryMessenger, "flutter_doc_scanner/ar").setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                arSink = events
+            }
+
+            override fun onCancel(arguments: Any?) {
+                arSink = null
+            }
+        })
     }
 
     override fun onDetachedFromEngine(b: FlutterPlugin.FlutterPluginBinding) {
@@ -108,6 +121,18 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
             }
             "stop" -> {
                 stop()
+                result.success(null)
+            }
+            "arStart" -> withPermission(result) { arStart(call.argument<Double>("aspect") ?: 0.75, result) }
+            "arAdd" -> ar?.add(call.argument<List<Double>>("at")) { ok -> main.post { result.success(ok) } } ?: result.success(false)
+            "arMove" -> ar?.move(call.argument<Int>("index")!!, call.argument<List<Double>>("at")!!) {
+                main.post { result.success(null) }
+            } ?: result.success(null)
+            "arUndo" -> result.success(ar?.undo())
+            "arClear" -> result.success(ar?.clear())
+            "arTorch" -> result.success(ar?.setTorch(call.argument<Boolean>("on") == true))
+            "arStop" -> {
+                arStop()
                 result.success(null)
             }
             "openSettings" -> {
@@ -262,6 +287,32 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
         )
     }
 
+    /** Starts ARCore (installing Google Play Services for AR if needed) into a texture of the given aspect. */
+    private fun arStart(aspect: Double, result: Result) {
+        val activity = binding?.activity ?: return result.error("NO_ACTIVITY", "AR needs a foreground activity", null)
+        stop() // ARCore needs the camera to itself
+        arStop()
+        try {
+            if (ArCoreApk.getInstance().requestInstall(activity, true) == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+                return result.error("AR_INSTALL", "Installing Google Play Services for AR", null)
+            }
+            val producer = textures.createSurfaceProducer()
+            val width = AR_WIDTH
+            val height = (AR_WIDTH / aspect).toInt() and 1.inv()
+            ar = ArMeasure(activity, producer, width, height) { event -> main.post { arSink?.success(event) } }
+            result.success(mapOf("textureId" to producer.id(), "width" to width, "height" to height))
+        } catch (e: UnavailableException) {
+            result.error("AR_UNSUPPORTED", e.message, null)
+        } catch (e: Exception) {
+            result.error("AR_FAILED", e.message, null)
+        }
+    }
+
+    private fun arStop() {
+        ar?.stop()
+        ar = null
+    }
+
     private fun stop() {
         provider?.unbindAll()
         producer?.release()
@@ -312,6 +363,7 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
 
     override fun onDetachedFromActivity() {
         stop()
+        arStop()
         binding?.removeRequestPermissionsResultListener(this)
         binding = null
     }
@@ -326,5 +378,8 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
         // so a sheet of paper held square-on isn't taken for a card. Cards sit smaller in frame than pages.
         val CARD_ASPECT = 1.45..1.85
         const val CARD_MIN_AREA = 0.06
+
+        // AR preview texture width; height follows the on-screen aspect so Dart shows it 1:1.
+        const val AR_WIDTH = 1080
     }
 }

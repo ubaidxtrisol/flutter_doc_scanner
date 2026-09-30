@@ -1,7 +1,9 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:vector_math/vector_math_64.dart';
 
 /// Live camera modes the native engine understands.
 /// `count` has no live analyzer (it counts a still photo in Dart); the camera just keeps running.
@@ -153,6 +155,105 @@ class ScannerPreviewView extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One AR camera frame. Positions are world-space meters; [viewProjection] maps them to clip space of the
+/// preview (column-major, OpenGL convention).
+class ArFrame {
+  const ArFrame({
+    required this.tracking,
+    this.reason = 'none',
+    this.hit,
+    this.normal,
+    this.hitKind,
+    this.points = const [],
+    this.viewProjection,
+  });
+
+  /// `tracking`, `paused` (still starting / lost) or `stopped`.
+  final String tracking;
+
+  /// Why tracking is poor: `none`, `bad_state`, `insufficient_light`, `excessive_motion`,
+  /// `insufficient_features`, `camera_unavailable`.
+  final String reason;
+
+  /// Where the screen-center reticle meets a surface; null when it isn't on one.
+  final Vector3? hit;
+
+  /// Surface normal at [hit] (unit length): exact on a detected plane, estimated from depth otherwise.
+  final Vector3? normal;
+
+  /// `plane` (a detected plane) or `depth` (depth / feature point); null without a hit.
+  final String? hitKind;
+
+  /// Placed points, in order.
+  final List<Vector3> points;
+  final Matrix4? viewProjection;
+
+  bool get isTracking => tracking == 'tracking';
+
+  factory ArFrame.fromMap(Map m) {
+    final vp = m['vp'] as List?;
+    return ArFrame(
+      tracking: m['tracking'] as String? ?? 'paused',
+      reason: m['reason'] as String? ?? 'none',
+      hit: _vectors(m['hit']).firstOrNull,
+      normal: _vectors(m['normal']).firstOrNull?.normalized(),
+      hitKind: m['kind'] as String?,
+      points: _vectors(m['points']),
+      viewProjection: vp == null ? null : Matrix4.fromList([for (final v in vp) (v as num).toDouble()]),
+    );
+  }
+
+  static List<Vector3> _vectors(Object? raw) {
+    if (raw is! List) return const [];
+    final v = raw.cast<num>();
+    return [for (var i = 0; i + 2 < v.length; i += 3) Vector3(v[i].toDouble(), v[i + 1].toDouble(), v[i + 2].toDouble())];
+  }
+}
+
+/// AR measuring session (Phase 5). Android: ARCore drawn into a texture. iOS: an ARKit view.
+abstract final class ArMeasure {
+  static const _channel = MethodChannel('flutter_doc_scanner');
+  static const _events = EventChannel('flutter_doc_scanner/ar');
+
+  /// Starts AR for a preview of [aspect] (width / height). Stop [DocScanner] first: AR needs the camera.
+  /// Returns the texture id (null on iOS, where [ArPreviewView] hosts a native view).
+  /// Throws [PlatformException]: `PERMISSION_DENIED`, `AR_UNSUPPORTED`, `AR_INSTALL` (Play Store opened),
+  /// `AR_FAILED`.
+  static Future<int?> start(double aspect) async =>
+      (await _channel.invokeMapMethod<String, Object?>('arStart', {'aspect': aspect}))?['textureId'] as int?;
+
+  static Stream<ArFrame> get frames => _events.receiveBroadcastStream().map((e) => ArFrame.fromMap(e as Map));
+
+  /// Anchors a point at [at] (world meters), or where the reticle hits when null. False if nothing to anchor.
+  static Future<bool> add({Vector3? at}) async =>
+      await _channel.invokeMethod<bool>('arAdd', {'at': at == null ? null : [at.x, at.y, at.z]}) ?? false;
+
+  /// Moves point [index] to [at] (world meters). Completes once the native anchor has moved.
+  static Future<void> move(int index, Vector3 at) =>
+      _channel.invokeMethod('arMove', {'index': index, 'at': [at.x, at.y, at.z]});
+
+  static Future<void> undo() => _channel.invokeMethod('arUndo');
+
+  static Future<void> clear() => _channel.invokeMethod('arClear');
+
+  static Future<void> setTorch(bool on) => _channel.invokeMethod('arTorch', {'on': on});
+
+  static Future<void> stop() => _channel.invokeMethod('arStop');
+}
+
+/// The AR camera, filling its box exactly (the session renders at the box's aspect).
+class ArPreviewView extends StatelessWidget {
+  const ArPreviewView(this.textureId, {super.key});
+  final int? textureId;
+
+  @override
+  Widget build(BuildContext context) => defaultTargetPlatform == TargetPlatform.iOS
+      ? const UiKitView(viewType: 'flutter_doc_scanner/ar')
+      : textureId == null
+          ? const SizedBox()
+          : Texture(textureId: textureId!);
 }
 
 enum QuadState { searching, detected, steady }

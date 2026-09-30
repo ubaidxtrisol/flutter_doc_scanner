@@ -54,4 +54,5 @@ dependencies {
     implementation("org.opencv:opencv:4.14.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.ar:core:1.56.0")
 }
