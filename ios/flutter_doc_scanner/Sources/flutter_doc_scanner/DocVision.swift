@@ -75,7 +75,10 @@ enum DocVision {
     }
 
     /// Perspective crop → rotate → filter → JPEG. Corners normalized TL, TR, BR, BL (nil = whole image).
-    static func process(path: String, corners: [Double]?, rotation: Int, filter: String, outPath: String, maxSize: Int?) throws -> [String: Any] {
+    static func process(
+        path: String, corners: [Double]?, rotation: Int, filter: String, outPath: String, maxSize: Int?,
+        brightness: Double = 0, contrast: Double = 0
+    ) throws -> [String: Any] {
         guard var img = load(path, maxSize: maxSize) else {
             throw NSError(domain: "flutter_doc_scanner", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot read \(path)"])
         }
@@ -102,6 +105,17 @@ enum DocVision {
         default: break
         }
         img = applyFilter(img, filter)
+        // Brightness / contrast (-1..1 each) after the filter, same curve as Android: (in − 0.5)·(1 + c) + 0.5 + b·100/255.
+        if brightness != 0 || contrast != 0 {
+            let a = 1 + contrast
+            let bias = CGFloat(0.5 * (1 - a) + brightness * 100 / 255)
+            img = img.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: CGFloat(a), y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: CGFloat(a), z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: CGFloat(a), w: 0),
+                "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0),
+            ]).applyingFilter("CIColorClamp")
+        }
         img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
 
         try context.writeJPEGRepresentation(
@@ -116,6 +130,8 @@ enum DocVision {
     private static func applyFilter(_ img: CIImage, _ filter: String) -> CIImage {
         switch filter {
         case "magic": return flatten(img)
+        case "noShadow": return flatten(img, deepen: false)
+        case "color": return img.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4, kCIInputContrastKey: 1.15])
         case "gray": return gray(img)
         case "bw": return flatten(gray(img)).applyingFilter("CIColorThreshold", parameters: ["inputThreshold": 0.78])
         default: return img
@@ -126,8 +142,8 @@ enum DocVision {
         img.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
     }
 
-    /// Removes shadows / uneven light: divide by an estimate of the bare paper, then deepen ink.
-    private static func flatten(_ img: CIImage) -> CIImage {
+    /// Removes shadows / uneven light: divide by an estimate of the bare paper, then (magic) deepen ink.
+    private static func flatten(_ img: CIImage, deepen: Bool = true) -> CIImage {
         let e = img.extent
         let s = 512 / max(e.width, e.height)
         // Ink is darker than paper, so a max filter wipes it out and leaves the paper tone.
@@ -140,6 +156,7 @@ enum DocVision {
             .cropped(to: e)
         // Divide blend: background / input, i.e. page / paper estimate.
         let divided = paper.applyingFilter("CIDivideBlendMode", parameters: [kCIInputBackgroundImageKey: img])
+        if !deepen { return divided.applyingFilter("CIColorClamp").cropped(to: e) }
         return divided
             .applyingFilter("CIColorMatrix", parameters: [
                 "inputRVector": CIVector(x: 1.3, y: 0, z: 0, w: 0),
@@ -178,6 +195,36 @@ enum DocVision {
             }
             let b = o.boundingBox
             return ["text": text, "box": [Double(b.minX), Double(1 - b.maxY), Double(b.maxX), Double(1 - b.minY)]]
+        }
+    }
+
+    // MARK: - Full OCR (recognizeText)
+
+    /// Vision language codes per script. Devanagari isn't supported by Vision; Japanese / Korean need iOS 16.
+    static let scriptLanguages: [String: [String]] = [
+        "latin": ["en-US", "fr-FR", "de-DE", "es-ES", "it-IT", "pt-BR"],
+        "chinese": ["zh-Hans", "zh-Hant", "en-US"],
+        "japanese": ["ja-JP", "en-US"],
+        "korean": ["ko-KR", "en-US"],
+    ]
+
+    /// All text, one block per recognized line (Vision has no paragraph grouping), same shape as Android's Readers.blocks.
+    /// Returns nil when the script isn't supported on this iOS version.
+    static func blocks(_ handler: VNImageRequestHandler, script: String) -> [[String: Any]]? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        if #available(iOS 16.0, *) { request.revision = VNRecognizeTextRequestRevision3 }
+        let supported = Set((try? request.supportedRecognitionLanguages()) ?? [])
+        let languages = (scriptLanguages[script] ?? []).filter { supported.contains($0) }
+        guard let first = languages.first, script == "latin" || !first.hasPrefix("en") else { return nil }
+        request.recognitionLanguages = languages
+        try? handler.perform([request])
+        return (request.results ?? []).compactMap { o in
+            guard let text = o.topCandidates(1).first?.string else { return nil }
+            let b = o.boundingBox
+            let box = [Double(b.minX), Double(1 - b.maxY), Double(b.maxX), Double(1 - b.minY)]
+            return ["text": text, "box": box, "lines": [["text": text, "box": box]]]
         }
     }
 }

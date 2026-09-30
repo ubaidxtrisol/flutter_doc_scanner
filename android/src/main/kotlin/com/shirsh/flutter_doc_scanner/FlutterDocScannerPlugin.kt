@@ -36,6 +36,7 @@ import io.flutter.plugin.common.PluginRegistry
 import io.flutter.view.TextureRegistry
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.exceptions.UnavailableException
+import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.common.InputImage
 import org.opencv.android.OpenCVLoader
 import org.opencv.core.CvType
@@ -117,8 +118,11 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
                     filter = call.argument<String>("filter") ?: "original",
                     outPath = call.argument<String>("outPath")!!,
                     maxSize = call.argument<Int>("maxSize"),
+                    brightness = call.argument<Double>("brightness") ?: 0.0,
+                    contrast = call.argument<Double>("contrast") ?: 0.0,
                 )
             }
+            "recognizeText" -> recognizeText(call.argument<String>("path")!!, call.argument<String>("script") ?: "latin", result)
             "stop" -> {
                 stop()
                 result.success(null)
@@ -262,6 +266,24 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
         }
         else -> mapOf("corners" to detectFile(path, m)?.toList())
     } + ("mode" to m)
+
+    /** OCR of a whole image file, off the main thread. Unbundled script models may still be downloading. */
+    private fun recognizeText(path: String, script: String, result: Result) {
+        if (script !in Readers.SCRIPTS) return result.error("UNSUPPORTED_SCRIPT", "Unknown script $script", null)
+        workers.execute {
+            try {
+                val input = InputImage.fromFilePath(context, Uri.fromFile(File(path)))
+                val blocks = Readers.blocks(input, input.width, input.height, script)
+                main.post { result.success(blocks) }
+            } catch (e: Exception) {
+                val unavailable = (e.cause as? MlKitException ?: e as? MlKitException)?.errorCode == MlKitException.UNAVAILABLE
+                main.post {
+                    if (unavailable) result.error("MODEL_UNAVAILABLE", "The $script text model is still downloading", null)
+                    else result.error("FAILED", e.message, null)
+                }
+            }
+        }
+    }
 
     private fun detectFile(path: String, m: String) =
         if (m == "idCard") DocVision().detectFile(path, CARD_MIN_AREA, CARD_ASPECT) else DocVision().detectFile(path)

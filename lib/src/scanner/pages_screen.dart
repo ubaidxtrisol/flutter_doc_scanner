@@ -1,216 +1,380 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
+import 'package:iconsax_plus/iconsax_plus.dart';
 
-import '../export/pdf_export.dart';
 import 'editor_screen.dart';
 import 'session.dart';
 import 'ui.dart';
 
-/// Review grid: reorder (long-press + drag), open the editor, add pages, export.
-/// Pops `true` when the user is done with the scan, anything else returns to the camera.
+/// Figma 3.5 Multi-page Review: reorder (long-press + drag), rotate / delete per page, multi-select, add pages from
+/// the camera or Photos, edit, and Save as PDF (pops a [ScanResult]; the host saves it). Back returns to the camera.
 class PagesScreen extends StatefulWidget {
-  const PagesScreen({super.key, required this.session});
+  const PagesScreen({super.key, required this.session, this.onAddFromPhotos});
   final ScanSession session;
+
+  /// Imports gallery photos into the session (the camera screen's import for the current mode).
+  final Future<void> Function()? onAddFromPhotos;
 
   @override
   State<PagesScreen> createState() => _PagesScreenState();
 }
 
 class _PagesScreenState extends State<PagesScreen> {
-  late final name = TextEditingController(text: 'Scan ${_stamp(DateTime.now())}');
-  bool exporting = false;
-  File? saved;
+  final title = defaultTitle();
+  final selected = <ScanPage>{};
+  bool selecting = false;
 
   ScanSession get session => widget.session;
 
-  @override
-  void initState() {
-    super.initState();
-    session.addListener(_changed);
-  }
-
-  @override
-  void dispose() {
-    session.removeListener(_changed);
-    name.dispose();
-    super.dispose();
-  }
-
-  // An edit after exporting makes the exported PDF stale.
-  void _changed() {
-    if (saved != null) setState(() => saved = null);
-  }
-
-  static String _stamp(DateTime d) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}.${two(d.minute)}';
-  }
-
-  Future<void> _export() async {
-    setState(() => exporting = true);
-    try {
-      final file = await exportPdf(session.pages, name.text);
-      setState(() => saved = file);
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path, mimeType: 'application/pdf')]));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
-    } finally {
-      if (mounted) setState(() => exporting = false);
-    }
-  }
-
-  void _openEditor(int index) => Navigator.of(context).push(
+  void _open(int i) => Navigator.of(context).push(
     MaterialPageRoute(
-      builder: (_) => EditorScreen(session: session, initialIndex: index),
+      builder: (_) => CropScreen(session: session, index: i),
     ),
   );
 
+  void _rotate(Iterable<ScanPage> pages) {
+    HapticFeedback.selectionClick();
+    for (final p in pages) {
+      p.rotation = (p.rotation + 90) % 360;
+      session.update(p);
+    }
+  }
+
+  void _delete(List<ScanPage> pages) {
+    HapticFeedback.mediumImpact();
+    final removed = [for (final p in pages) (session.pages.indexOf(p), p)]..sort((a, b) => a.$1.compareTo(b.$1));
+    for (final (_, p) in removed) {
+      session.remove(p);
+    }
+    setState(() {
+      selected.clear();
+      selecting = false;
+    });
+    showToast(
+      context,
+      removed.length == 1 ? 'Page ${removed.single.$1 + 1} deleted' : '${removed.length} pages deleted',
+      undo: () {
+        for (final (i, p) in removed) {
+          session.insert(i, p);
+        }
+      },
+    );
+  }
+
+  Future<void> _addPage() async {
+    final c = Palette.of(context);
+    final choice = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: c.bgCard,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (context) {
+        Widget row(IconData icon, String label, bool photos) => ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          leading: Container(
+            width: 40,
+            height: 40,
+            decoration: squircleBox(12, color: c.brandSoft),
+            child: Icon(icon, size: 20, color: c.brand),
+          ),
+          title: Text(label, style: TextStyles.body.copyWith(color: c.textPrimary)),
+          onTap: () => Navigator.pop(context, photos),
+        );
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                row(IconsaxPlusLinear.camera, 'Camera', false),
+                if (widget.onAddFromPhotos != null) row(IconsaxPlusLinear.gallery, 'Photos', true),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+    if (choice) return widget.onAddFromPhotos!();
+    Navigator.of(context).pop(); // back to the camera
+  }
+
   @override
   Widget build(BuildContext context) {
+    final c = Palette.of(context);
     return ListenableBuilder(
       listenable: session,
       builder: (context, _) {
-        if (session.pages.isEmpty) {
+        final n = session.pages.length;
+        if (n == 0) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) Navigator.of(context).maybePop();
           });
         }
-        return Scaffold(
-          backgroundColor: Tone.chrome,
-          appBar: AppBar(
-            backgroundColor: Tone.chrome,
-            foregroundColor: Colors.white,
-            titleSpacing: 0,
-            title: TextField(
-              controller: name,
-              style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                suffixIcon: Icon(Icons.edit_outlined, size: 18, color: Tone.muted),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () =>
-                    Navigator.of(context).pop(ScanResult(List.of(session.pages), title: name.text, pdf: saved)),
-                child: const Text(
-                  'Done',
-                  style: TextStyle(color: Tone.accent, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
+        selected.removeWhere((p) => !session.pages.contains(p));
+        return LightScreen(
+          title: selecting ? '${selected.length} Selected' : '$n Page${n == 1 ? '' : 's'}',
+          right: NavText(
+            selecting ? 'Cancel' : 'Select',
+            onTap: () {
+              setState(() {
+                selecting = !selecting;
+                selected.clear();
+              });
+            },
           ),
-          body: GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              childAspectRatio: .68,
-              mainAxisSpacing: 16,
-              crossAxisSpacing: 16,
-            ),
-            itemCount: session.pages.length,
-            itemBuilder: (_, i) => _cell(i),
-          ),
-          bottomNavigationBar: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: Row(
+          body: LayoutBuilder(
+            builder: (context, box) {
+              final w = (box.maxWidth - 40 - 13) / 2;
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 16),
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white24),
-                        minimumSize: const Size.fromHeight(52),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.add_a_photo_outlined),
-                      label: const Text('Add page'),
-                    ),
+                  InfoBanner(
+                    icon: IconsaxPlusLinear.info_circle,
+                    text: selecting ? 'Tap pages to select them' : 'Long-press and drag to reorder pages',
+                    fg: c.brand,
+                    bg: c.brandSoft,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Tone.accent,
-                        minimumSize: const Size.fromHeight(52),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      onPressed: exporting ? null : _export,
-                      icon: exporting
-                          ? const SizedBox.square(
-                              dimension: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Icon(Icons.picture_as_pdf_outlined),
-                      label: Text(saved == null ? 'Export PDF' : 'Share again'),
-                    ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 13,
+                    runSpacing: 14,
+                    children: [
+                      for (var i = 0; i < n; i++) Appear(key: ValueKey(session.pages[i]), index: i, child: _cell(i, w)),
+                      if (!selecting) Appear(index: n, child: _addCard(c, w)),
+                    ],
                   ),
                 ],
-              ),
-            ),
+              );
+            },
+          ),
+          actions: AnimatedSwitcher(
+            duration: fast,
+            child: selecting
+                ? Row(
+                    key: const ValueKey('select'),
+                    children: [
+                      SquareButton(
+                        icon: IconsaxPlusLinear.rotate_right_1,
+                        label: 'Rotate selected',
+                        onTap: selected.isEmpty ? null : () => _rotate(selected),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ScanButton(
+                          selected.isEmpty ? 'Delete' : 'Delete ${selected.length}',
+                          icon: IconsaxPlusLinear.trash,
+                          kind: ButtonKind.danger,
+                          onPressed: selected.isEmpty ? null : () => _delete([...selected]),
+                        ),
+                      ),
+                    ],
+                  )
+                : Row(
+                    key: const ValueKey('save'),
+                    children: [
+                      SquareButton(
+                        icon: IconsaxPlusLinear.edit_2,
+                        label: 'Edit pages',
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(MaterialPageRoute(builder: (_) => EnhanceScreen(session: session, initialIndex: 0))),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ScanButton(
+                          'Save as PDF',
+                          icon: IconsaxPlusLinear.document_download,
+                          onPressed: () => Navigator.of(context).pop(ScanResult(List.of(session.pages), title: title)),
+                        ),
+                      ),
+                    ],
+                  ),
           ),
         );
       },
     );
   }
 
-  Widget _cell(int i) => LayoutBuilder(
-    builder: (context, box) => DragTarget<int>(
+  Widget _cell(int i, double w) {
+    final page = session.pages[i];
+    final card = SizedBox(width: w, child: _card(i));
+    if (selecting) {
+      return GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() => selected.contains(page) ? selected.remove(page) : selected.add(page));
+        },
+        child: card,
+      );
+    }
+    return DragTarget<int>(
       onWillAcceptWithDetails: (d) => d.data != i,
-      onAcceptWithDetails: (d) => session.move(d.data, i),
+      onAcceptWithDetails: (d) {
+        HapticFeedback.selectionClick();
+        session.move(d.data, i);
+      },
       builder: (context, candidates, _) => LongPressDraggable<int>(
         data: i,
-        feedback: SizedBox.fromSize(size: box.biggest, child: _card(i, lifted: true)),
-        childWhenDragging: Opacity(opacity: .3, child: _card(i)),
+        onDragStarted: HapticFeedback.mediumImpact,
+        feedback: Material(
+          type: MaterialType.transparency,
+          child: Transform.rotate(
+            angle: .03,
+            child: SizedBox(width: w, child: _card(i, lifted: true)),
+          ),
+        ),
+        childWhenDragging: Opacity(opacity: .35, child: card),
         child: GestureDetector(
-          onTap: () => _openEditor(i),
-          child: _card(i, highlight: candidates.isNotEmpty),
+          onTap: () => _open(i),
+          child: SizedBox(
+            width: w,
+            child: _card(i, lifted: candidates.isNotEmpty),
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
-  Widget _card(int i, {bool lifted = false, bool highlight = false}) {
+  Widget _card(int i, {bool lifted = false}) {
+    final c = Palette.of(context);
     final page = session.pages[i];
-    return Material(
-      type: MaterialType.transparency,
+    final on = lifted || selected.contains(page);
+    final image = page.preview;
+    return AnimatedContainer(
+      duration: fast,
+      padding: EdgeInsets.all(on ? 8 : 10),
+      decoration: squircleBox(
+        20,
+        color: c.bgCard,
+        side: on ? BorderSide(color: c.brand, width: 2) : BorderSide.none,
+        shadows: on ? Shadows.raised : Shadows.xs,
+      ),
       child: Column(
         children: [
-          Expanded(
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              decoration: BoxDecoration(
-                color: Tone.surface,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: highlight ? Tone.accent : Colors.transparent, width: 2),
-                boxShadow: lifted ? const [BoxShadow(color: Colors.black54, blurRadius: 16)] : null,
-              ),
-              padding: const EdgeInsets.all(6),
-              child: page.preview == null
-                  ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-                  : Image(
-                      image: ResizeImage(
-                        FileImage(File(page.preview!)),
-                        width: 600,
-                        height: 800,
-                        policy: ResizeImagePolicy.fit,
+          AspectRatio(
+            aspectRatio: 150 / 196,
+            child: Container(
+              decoration: squircleBox(12, color: c.bgFill),
+              padding: const EdgeInsets.all(12),
+              child: image == null
+                  ? const Center(
+                      child: SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  : Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(borderRadius: BorderRadius.circular(4), boxShadow: Shadows.card),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Image(
+                            image: ResizeImage(
+                              FileImage(File(image)),
+                              width: 450,
+                              height: 600,
+                              policy: ResizeImagePolicy.fit,
+                            ),
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                          ),
+                        ),
                       ),
-                      fit: BoxFit.contain,
-                      gaplessPlayback: true,
                     ),
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            page.label == null ? '${i + 1}' : '${i + 1} · ${page.label}',
-            style: const TextStyle(color: Tone.muted, fontSize: 13, fontWeight: FontWeight.w600),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: Row(
+              children: [
+                AnimatedContainer(
+                  duration: fast,
+                  width: 26,
+                  height: 26,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: on ? c.brand : c.bgFill, shape: BoxShape.circle),
+                  child: Text(
+                    '${i + 1}',
+                    style: TextStyles.caption1Medium.copyWith(color: on ? Colors.white : c.textPrimary),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    page.label ?? '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyles.caption1.copyWith(color: c.textSecondary),
+                  ),
+                ),
+                if (!selecting) ...[
+                  _icon(IconsaxPlusLinear.rotate_right_1, 'Rotate page ${i + 1}', c.textPrimary, () => _rotate([page])),
+                  const SizedBox(width: 10),
+                  _icon(IconsaxPlusLinear.trash, 'Delete page ${i + 1}', c.red, () => _delete([page])),
+                ],
+              ],
+            ),
           ),
         ],
       ),
     );
   }
+
+  Widget _icon(IconData icon, String label, Color color, VoidCallback onTap) => Pressable(
+    label: label,
+    scale: .85,
+    onTap: onTap,
+    child: SizedBox(width: 26, height: 26, child: Icon(icon, size: 18, color: color)),
+  );
+
+  Widget _addCard(Palette c, double w) => Pressable(
+    label: 'Add page',
+    onTap: _addPage,
+    child: SizedBox(
+      width: w,
+      height: w * 250 / 170,
+      child: CustomPaint(
+        painter: _DashedBorder(c.brand, c.brandSoft),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(color: c.brand, shape: BoxShape.circle),
+              child: const Icon(IconsaxPlusLinear.add, size: 26, color: Colors.white),
+            ),
+            const SizedBox(height: 10),
+            Text('Add page', style: TextStyles.subheadSemibold.copyWith(color: c.brand)),
+            const SizedBox(height: 10),
+            Text('Camera or Photos', style: TextStyles.caption1.copyWith(color: c.textSecondary)),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// Figma "Add Page": brand-soft fill, 1.5 pt dashed brand outline, r20.
+class _DashedBorder extends CustomPainter {
+  _DashedBorder(this.color, this.fill);
+  final Color color, fill;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(20)).deflate(.75);
+    canvas.drawRRect(r, Paint()..color = fill);
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    for (final m in (Path()..addRRect(r)).computeMetrics()) {
+      for (var d = 0.0; d < m.length; d += 10) {
+        canvas.drawPath(m.extractPath(d, d + 6), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorder old) => old.color != color || old.fill != fill;
 }

@@ -9,8 +9,9 @@ import 'package:vector_math/vector_math_64.dart';
 /// `count` has no live analyzer (it counts a still photo in Dart); the camera just keeps running.
 enum ScanMode { document, idCard, passport, book, qr, math, count }
 
-/// Page filters applied by [DocScanner.process].
-enum PageFilter { original, magic, gray, bw }
+/// Page filters applied by [DocScanner.process], in the order the Enhance screen shows them.
+/// `noShadow` = shadow removal only (tones kept); `magic` = shadow removal + deeper ink; `color` = saturation boost.
+enum PageFilter { original, magic, bw, gray, noShadow, color }
 
 /// Started camera preview. [size] is the portrait preview size in pixels.
 class ScannerPreview {
@@ -36,21 +37,22 @@ class Detection {
   final List<TextLine> lines;
 
   factory Detection.fromMap(Map m) => Detection(
-        m['mode'] as String,
-        corners: DocScanner._points(m['corners']),
-        codes: [
-          for (final c in (m['codes'] as List?) ?? const [])
-            ScannedCode((c as Map)['value'] as String, DocScanner._points(c['corners'])),
-        ],
-        lines: [
-          for (final l in (m['lines'] as List?) ?? const [])
-            TextLine((l as Map)['text'] as String, _rect(l['box'] as List)),
-        ],
-      );
-
-  static Rect _rect(List b) => Rect.fromLTRB(
-      (b[0] as num).toDouble(), (b[1] as num).toDouble(), (b[2] as num).toDouble(), (b[3] as num).toDouble());
+    m['mode'] as String,
+    corners: DocScanner._points(m['corners']),
+    codes: [
+      for (final c in (m['codes'] as List?) ?? const [])
+        ScannedCode((c as Map)['value'] as String, DocScanner._points(c['corners'])),
+    ],
+    lines: [for (final l in (m['lines'] as List?) ?? const []) TextLine.fromMap(l as Map)],
+  );
 }
+
+Rect _rect(List b) => Rect.fromLTRB(
+  (b[0] as num).toDouble(),
+  (b[1] as num).toDouble(),
+  (b[2] as num).toDouble(),
+  (b[3] as num).toDouble(),
+);
 
 class ScannedCode {
   const ScannedCode(this.value, this.corners);
@@ -61,7 +63,26 @@ class ScannedCode {
 class TextLine {
   const TextLine(this.text, this.box);
   final String text;
+
+  /// Normalized 0..1 in the upright image.
   final Rect box;
+
+  factory TextLine.fromMap(Map m) => TextLine(m['text'] as String, _rect(m['box'] as List));
+}
+
+/// A paragraph-like block from [DocScanner.recognizeText]. On iOS every block is a single line (Vision reports
+/// lines only).
+class TextBlock {
+  const TextBlock(this.text, this.box, this.lines);
+  final String text;
+
+  /// Normalized 0..1 in the upright image.
+  final Rect box;
+  final List<TextLine> lines;
+
+  factory TextBlock.fromMap(Map m) => TextBlock(m['text'] as String, _rect(m['box'] as List), [
+    for (final l in (m['lines'] as List?) ?? const []) TextLine.fromMap(l as Map),
+  ]);
 }
 
 /// A photo from [DocScanner.capture]. [corners] are detected on the full-res photo.
@@ -107,8 +128,9 @@ abstract final class DocScanner {
   static Future<Detection> analyzeFile(String path, ScanMode mode) async =>
       Detection.fromMap((await _channel.invokeMethod<Map>('analyze', {'path': path, 'mode': mode.name}))!);
 
-  /// Perspective crop → rotate → filter → JPEG at [outPath]. Null [corners] keeps the whole image.
-  /// [maxSize] caps the long side, for fast thumbnails.
+  /// Perspective crop → rotate → filter → brightness / contrast → JPEG at [outPath]. Null [corners] keeps the
+  /// whole image. [maxSize] caps the long side, for fast thumbnails. [brightness] and [contrast] run -1..1
+  /// (0 = unchanged): `out = (in − 128) · (1 + contrast) + 128 + 100 · brightness`.
   static Future<void> process({
     required String path,
     required String outPath,
@@ -116,15 +138,27 @@ abstract final class DocScanner {
     int rotation = 0,
     PageFilter filter = PageFilter.original,
     int? maxSize,
-  }) =>
-      _channel.invokeMethod('process', {
-        'path': path,
-        'outPath': outPath,
-        'corners': corners?.expand((p) => [p.dx, p.dy]).toList(),
-        'rotation': rotation,
-        'filter': filter.name,
-        'maxSize': maxSize,
-      });
+    double brightness = 0,
+    double contrast = 0,
+  }) => _channel.invokeMethod('process', {
+    'path': path,
+    'outPath': outPath,
+    'corners': corners?.expand((p) => [p.dx, p.dy]).toList(),
+    'rotation': rotation,
+    'filter': filter.name,
+    'maxSize': maxSize,
+    'brightness': brightness,
+    'contrast': contrast,
+  });
+
+  /// Full OCR of an image file (any photo or rendered PDF page): every text block with its lines, boxes normalized
+  /// 0..1 in the upright image. [script]: `latin`, `chinese`, `devanagari`, `japanese`, `korean`.
+  /// Throws [PlatformException]: `UNSUPPORTED_SCRIPT` (unknown, or not available on this iOS; Vision has no
+  /// Devanagari), `MODEL_UNAVAILABLE` (Android is still downloading that script's model; retry shortly), `FAILED`.
+  static Future<List<TextBlock>> recognizeText(String path, {String script = 'latin'}) async => [
+    for (final b in (await _channel.invokeListMethod<Map>('recognizeText', {'path': path, 'script': script}))!)
+      TextBlock.fromMap(b),
+  ];
 
   static List<Offset>? _points(Object? raw) {
     if (raw is! List || raw.length != 8) return null;
@@ -208,7 +242,9 @@ class ArFrame {
   static List<Vector3> _vectors(Object? raw) {
     if (raw is! List) return const [];
     final v = raw.cast<num>();
-    return [for (var i = 0; i + 2 < v.length; i += 3) Vector3(v[i].toDouble(), v[i + 1].toDouble(), v[i + 2].toDouble())];
+    return [
+      for (var i = 0; i + 2 < v.length; i += 3) Vector3(v[i].toDouble(), v[i + 1].toDouble(), v[i + 2].toDouble()),
+    ];
   }
 }
 
@@ -228,11 +264,16 @@ abstract final class ArMeasure {
 
   /// Anchors a point at [at] (world meters), or where the reticle hits when null. False if nothing to anchor.
   static Future<bool> add({Vector3? at}) async =>
-      await _channel.invokeMethod<bool>('arAdd', {'at': at == null ? null : [at.x, at.y, at.z]}) ?? false;
+      await _channel.invokeMethod<bool>('arAdd', {
+        'at': at == null ? null : [at.x, at.y, at.z],
+      }) ??
+      false;
 
   /// Moves point [index] to [at] (world meters). Completes once the native anchor has moved.
-  static Future<void> move(int index, Vector3 at) =>
-      _channel.invokeMethod('arMove', {'index': index, 'at': [at.x, at.y, at.z]});
+  static Future<void> move(int index, Vector3 at) => _channel.invokeMethod('arMove', {
+    'index': index,
+    'at': [at.x, at.y, at.z],
+  });
 
   static Future<void> undo() => _channel.invokeMethod('arUndo');
 
@@ -252,8 +293,8 @@ class ArPreviewView extends StatelessWidget {
   Widget build(BuildContext context) => defaultTargetPlatform == TargetPlatform.iOS
       ? const UiKitView(viewType: 'flutter_doc_scanner/ar')
       : textureId == null
-          ? const SizedBox()
-          : Texture(textureId: textureId!);
+      ? const SizedBox()
+      : Texture(textureId: textureId!);
 }
 
 enum QuadState { searching, detected, steady }

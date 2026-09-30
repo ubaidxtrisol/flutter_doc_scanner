@@ -10,6 +10,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  figma_squircle: ^0.6.3 # continuous corners with the design's 60% smoothing
+  iconsax_plus: ^1.0.0 # Iconsax Linear + Bold, as in the design
   image_picker: ^1.2.3
   path_provider: ^2.1.6
   pdf: ^3.13.1

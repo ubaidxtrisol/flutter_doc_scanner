@@ -179,6 +179,8 @@ internal class DocVision {
             filter: String,
             outPath: String,
             maxSize: Int?,
+            brightness: Double = 0.0,
+            contrast: Double = 0.0,
         ): Map<String, Any> {
             val src = Imgcodecs.imread(path, if (maxSize == null) Imgcodecs.IMREAD_COLOR else reducedFlag(path, maxSize, gray = false))
             require(!src.empty()) { "Cannot read $path" }
@@ -205,12 +207,19 @@ internal class DocVision {
                 270 -> Core.rotate(img, img, Core.ROTATE_90_COUNTERCLOCKWISE)
             }
             val out = applyFilter(img, filter)
+            // Brightness / contrast (-1..1 each) after the filter: out = (in − 128)·(1 + c) + 128 + 100·b.
+            if (brightness != 0.0 || contrast != 0.0) {
+                val a = 1 + contrast
+                out.convertTo(out, -1, a, 128 * (1 - a) + 100 * brightness)
+            }
             Imgcodecs.imwrite(outPath, out, MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, 90))
             return mapOf("path" to outPath, "width" to out.cols(), "height" to out.rows())
         }
 
         private fun applyFilter(img: Mat, filter: String): Mat = when (filter) {
             "magic" -> flatten(img)
+            "noShadow" -> flatten(img, deepen = false)
+            "color" -> vivid(img)
             "gray" -> gray(img)
             "bw" -> {
                 val g = flatten(gray(img))
@@ -228,8 +237,25 @@ internal class DocVision {
             return Mat().also { Imgproc.cvtColor(img, it, Imgproc.COLOR_BGR2GRAY) }
         }
 
-        /** Removes shadows / uneven light: divide by an estimate of the bare paper, then deepen ink. */
-        private fun flatten(img: Mat): Mat {
+        /** Colour boost for photos and colourful pages: saturation ×1.4, contrast ×1.15. */
+        private fun vivid(img: Mat): Mat {
+            if (img.channels() == 1) return img
+            val hsv = Mat()
+            Imgproc.cvtColor(img, hsv, Imgproc.COLOR_BGR2HSV)
+            val ch = ArrayList<Mat>()
+            Core.split(hsv, ch)
+            ch[1].convertTo(ch[1], -1, 1.4, 0.0)
+            Core.merge(ch, hsv)
+            val out = Mat()
+            Imgproc.cvtColor(hsv, out, Imgproc.COLOR_HSV2BGR)
+            out.convertTo(out, -1, 1.15, 128 * (1 - 1.15))
+            hsv.release()
+            ch.forEach { it.release() }
+            return out
+        }
+
+        /** Removes shadows / uneven light: divide by an estimate of the bare paper, then (magic) deepen ink. */
+        private fun flatten(img: Mat, deepen: Boolean = true): Mat {
             val s = 512.0 / max(img.cols(), img.rows())
             val bg = Mat()
             Imgproc.resize(img, bg, Size(), s, s, Imgproc.INTER_AREA)
@@ -240,7 +266,7 @@ internal class DocVision {
             val out = Mat()
             Core.divide(img, bg, out, 255.0)
             // Paper sits at ~255 now; stretch below it so text gets crisp and dark.
-            out.convertTo(out, -1, 1.3, 255 - 1.3 * 255)
+            if (deepen) out.convertTo(out, -1, 1.3, 255 - 1.3 * 255)
             bg.release()
             return out
         }

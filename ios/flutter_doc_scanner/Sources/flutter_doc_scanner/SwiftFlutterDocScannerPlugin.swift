@@ -80,11 +80,27 @@ public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStrea
                         rotation: args["rotation"] as? Int ?? 0,
                         filter: args["filter"] as? String ?? "original",
                         outPath: args["outPath"] as? String ?? "",
-                        maxSize: args["maxSize"] as? Int
+                        maxSize: args["maxSize"] as? Int,
+                        brightness: args["brightness"] as? Double ?? 0,
+                        contrast: args["contrast"] as? Double ?? 0
                     )
                     DispatchQueue.main.async { result(out) }
                 } catch {
                     DispatchQueue.main.async { result(FlutterError(code: "FAILED", message: error.localizedDescription, details: nil)) }
+                }
+            }
+        case "recognizeText":
+            let path = args["path"] as? String ?? ""
+            let script = args["script"] as? String ?? "latin"
+            work.async {
+                guard let image = DocVision.load(path, maxSize: nil) else {
+                    return DispatchQueue.main.async { result(FlutterError(code: "FAILED", message: "Cannot read \(path)", details: nil)) }
+                }
+                let blocks = DocVision.blocks(VNImageRequestHandler(ciImage: image), script: script)
+                DispatchQueue.main.async {
+                    if let blocks { result(blocks) } else {
+                        result(FlutterError(code: "UNSUPPORTED_SCRIPT", message: "\(script) text isn't supported on this iOS version", details: nil))
+                    }
                 }
             }
         case "stop":

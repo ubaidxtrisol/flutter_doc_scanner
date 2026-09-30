@@ -27,6 +27,8 @@ Future<File> exportPdf(List<ScanPage> pages, String name) async {
           rotation: p.rotation,
           filter: p.filter,
           maxSize: _exportSize,
+          brightness: p.brightness,
+          contrast: p.contrast,
         );
         return File(out);
       }(),
@@ -41,18 +43,25 @@ Future<File> exportPdf(List<ScanPage> pages, String name) async {
     if (group == null) {
       final image = images[i++];
       final width = PdfPageFormat.a4.width;
-      doc.addPage(pw.Page(
-        pageFormat: PdfPageFormat(width, width * image.height! / image.width!),
-        margin: pw.EdgeInsets.zero,
-        build: (_) => pw.Image(image, fit: pw.BoxFit.fill),
-      ));
+      doc.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat(width, width * image.height! / image.width!),
+          margin: pw.EdgeInsets.zero,
+          build: (_) => pw.Image(image, fit: pw.BoxFit.fill),
+        ),
+      );
       continue;
     }
     final members = <pw.MemoryImage>[];
+    final sideBySide = pages[i].sideBySide;
     while (i < pages.length && pages[i].group == group) {
       members.add(images[i++]);
     }
-    doc.addPage(pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => _idSheet(members)));
+    doc.addPage(
+      sideBySide
+          ? pw.Page(pageFormat: PdfPageFormat.a4.landscape, build: (_) => _idSheet(members, row: true))
+          : pw.Page(pageFormat: PdfPageFormat.a4, build: (_) => _idSheet(members, row: false)),
+    );
   }
 
   final dir = await getApplicationDocumentsDirectory();
@@ -68,16 +77,28 @@ Future<File> exportPdf(List<ScanPage> pages, String name) async {
   return out;
 }
 
-/// ID-copy layout: each side at real ID-1 size (85.6 × 54 mm), stacked and centered on A4.
-pw.Widget _idSheet(List<pw.MemoryImage> sides) => pw.Padding(
-      padding: const pw.EdgeInsets.only(top: 48),
-      child: pw.Column(children: [
-        for (final side in sides)
-          pw.Padding(
-            padding: const pw.EdgeInsets.only(bottom: 36),
-            child: side.width! >= side.height!
-                ? pw.SizedBox(width: 85.6 * PdfPageFormat.mm, height: 54 * PdfPageFormat.mm, child: pw.Image(side))
-                : pw.SizedBox(width: 54 * PdfPageFormat.mm, height: 85.6 * PdfPageFormat.mm, child: pw.Image(side)),
+/// ID-copy layout: each side at real ID-1 size (85.6 × 54 mm), stacked on portrait A4 or in a row on landscape A4.
+pw.Widget _idSheet(List<pw.MemoryImage> sides, {required bool row}) {
+  final cards = [
+    for (final side in sides)
+      pw.Padding(
+        padding: row ? const pw.EdgeInsets.symmetric(horizontal: 18) : const pw.EdgeInsets.only(bottom: 36),
+        child: side.width! >= side.height!
+            ? pw.SizedBox(width: 85.6 * PdfPageFormat.mm, height: 54 * PdfPageFormat.mm, child: pw.Image(side))
+            : pw.SizedBox(width: 54 * PdfPageFormat.mm, height: 85.6 * PdfPageFormat.mm, child: pw.Image(side)),
+      ),
+  ];
+  return row
+      ? pw.Padding(
+          padding: const pw.EdgeInsets.only(top: 48),
+          child: pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.center,
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: cards,
           ),
-      ]),
-    );
+        )
+      : pw.Padding(
+          padding: const pw.EdgeInsets.only(top: 48),
+          child: pw.Column(children: cards),
+        );
+}

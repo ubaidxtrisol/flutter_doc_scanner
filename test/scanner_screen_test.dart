@@ -57,10 +57,10 @@ void main() {
     expect(find.text('AUTO'), findsOneWidget);
 
     await tab(tester, 'ID Card');
-    expect(find.text('1   Front side'), findsOneWidget);
+    expect(find.text('1  Front side'), findsOneWidget);
     expect(find.text('Fit the card inside the frame'), findsOneWidget);
     expect(find.text('AUTO'), findsNothing);
-    await tester.tap(find.text('2   Back side'));
+    await tester.tap(find.text('2  Back side'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Now scan the back side'), findsOneWidget);
 
@@ -91,7 +91,7 @@ void main() {
     expect(find.text('Open Link'), findsOneWidget);
   });
 
-  testWidgets('passport: two matching MRZ reads → capture → verified sheet', (tester) async {
+  testWidgets('passport: two matching MRZ reads → capture → result screen (Figma 9.4)', (tester) async {
     await open(tester);
     await tab(tester, 'Passport');
     final lines = [
@@ -105,10 +105,17 @@ void main() {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20))); // capture round-trip
     await tester.pump(const Duration(milliseconds: 400));
     expect(calls, contains('capture'));
-    expect(find.text('Verified'), findsOneWidget);
-    expect(find.text('ANNA MARIA ERIKSSON'), findsOneWidget);
+    for (var i = 0; i < 3; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20))); // camera stop, push
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+    expect(calls, contains('stop')); // the camera is released while the result screen is up
+    expect(find.text('MRZ verified'), findsOneWidget);
+    expect(find.text('ERIKSSON'), findsOneWidget);
+    expect(find.text('Anna Maria'), findsOneWidget);
     expect(find.text('L898902C3'), findsOneWidget);
-    expect(find.text('Expired'), findsOneWidget); // specimen expired in 2012
+    expect(find.text('UTO'), findsNWidgets(2)); // nationality + issuing country, straight from the MRZ
+    expect(find.text('Expired on 15 Apr 2012'), findsOneWidget); // the specimen expired in 2012
   });
 
   testWidgets('math: a solvable problem seen twice opens the answer (Figma 7.4)', (tester) async {

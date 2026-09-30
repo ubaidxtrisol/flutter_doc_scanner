@@ -42,19 +42,20 @@ void main() {
     return result;
   }
 
-  testWidgets('Done returns the scanned pages', (tester) async {
+  testWidgets('Save as PDF returns the scanned pages', (tester) async {
     final result = await openFromHost(tester);
     expect(calls, contains('start'));
 
     await tester.tap(find.bySemanticsLabel('Capture'));
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300)); // the page stack pops in
     await tester.tap(find.bySemanticsLabel(RegExp('^Review 1 page')));
     for (var i = 0; i < 5; i++) {
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
       await tester.pump(const Duration(milliseconds: 100));
     }
-    await tester.tap(find.text('Done'));
+    await tester.tap(find.text('Save as PDF'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 

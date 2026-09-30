@@ -14,6 +14,7 @@ Tracker for the scanner module (this package): the camera + detection engine and
 | 4 | Object counter | 7.5 | 🟡 Current: built, real-object acceptance pending |
 | 5 | AR area measurement | 7.6 | 🟡 Current: Android built, real-floor acceptance pending |
 | 6 | Scanner as a self-contained module (plugin) | — | ✅ Complete |
+| 6b | Figma UI match (3.1–3.5, 7.1, 9.1–9.4) + `recognizeText` OCR channel | 3.x, 7.1, 9.x | 🟡 Current: built, device check pending |
 | 7 | iOS pass (build, run, fix, accept every phase on iPhone) | all | ⬜ Todo: deferred to the end by decision |
 
 Goals, in order: **accurate**, **fast**, **easy to use**. Each phase has acceptance criteria that
@@ -76,7 +77,8 @@ MethodChannel `flutter_doc_scanner`:
 | `setTorch` | `{on}` | – |
 | `capture` | – | `{path, corners?}`: full-res JPEG (EXIF orientation). `corners` come from re-running detection on the photo |
 | `analyze` | `{path, mode}` | same shape as a detection event, for gallery imports (Phase 2 replaced `detect`) |
-| `process` | `{path, outPath, corners?, rotation, filter, maxSize?}` | `{path, width, height}`: one pass of perspective crop → rotate (0/90/180/270) → filter → JPEG. `maxSize` caps the long side (fast decode path for thumbnails and previews) |
+| `process` | `{path, outPath, corners?, rotation, filter, maxSize?, brightness?, contrast?}` | `{path, width, height}`: one pass of perspective crop → rotate (0/90/180/270) → filter → brightness/contrast → JPEG. `maxSize` caps the long side (fast decode path for thumbnails and previews). `filter`: `original, magic, bw, gray, noShadow, color`. `brightness`/`contrast` are -1..1 (0 = unchanged): `out = (in − 128)·(1 + contrast) + 128 + 100·brightness` |
+| `recognizeText` | `{path, script}` | `[{text, box:[l,t,r,b], lines:[{text, box}]}]`: full OCR of any image file, boxes normalized 0..1 in the upright image, run off the main thread. `script`: `latin` (default), `chinese`, `devanagari`, `japanese`, `korean`. Errors: `UNSUPPORTED_SCRIPT` (unknown script; iOS: Devanagari, or Japanese/Korean before iOS 16), `MODEL_UNAVAILABLE` (Android: that script's model is still downloading from Play Services; retry), `FAILED` |
 | `stop` | – | – (release camera + texture) |
 | `openSettings` | – | – (app's system settings page) |
 
@@ -104,11 +106,11 @@ Modes enum: `document, idCard, passport, book, qr, math`. Count / Measure are UI
 - [x] `QuadTracker`: EMA smoothing, 250 ms hold on loss, 700 ms steady window, jump detection, and an **armed** flag (no re-shoot until the page leaves or changes). 5 unit tests in `test/quad_tracker_test.dart`.
 
 ### 1.6 App UI (`lib/src/scanner/`, `lib/src/export/`)
-Tokens in `lib/src/scanner/ui.dart` (`Tone`) are eyeballed from the PNGs; swap in exact Figma variables when available.
+Tokens in `lib/src/scanner/ui.dart` are the exact Figma variables (see Phase 6b): `Tone` for the camera, `Palette` (light + dark) for the other screens.
 - [x] **Camera** (`scanner_screen.dart`, Figma 3.1/3.2): top bar (close, torch, grid, AUTO, settings no-op) · cover-fit preview · dashed guide / blue quad with handles · status pills · swipeable combined tabs (swipe the preview too) · gallery / shutter with steady-progress ring / page stack with badge · white flash + haptic on capture · permission-denied screen with Open Settings · confirm before discarding pages.
 - [x] **Auto-capture** via `QuadTracker` (steady ~0.7 s, armed flag). The live quad is the fallback when photo re-detection fails.
-- [x] **Pages** (`pages_screen.dart`): grid · long-press drag reorder · rename · Add page · Export PDF → share sheet · Done.
-- [x] **Editor** (`editor_screen.dart`, `crop_editor.dart`): swipe pages · pinch zoom · Crop (corner + edge handles, convexity guard, **loupe** opposite the finger, Auto / Full) · Rotate · Filters with live thumbnails + Apply to all · Retake (replaces the page in place) · Delete with Undo.
+- [x] **Pages** (`pages_screen.dart`, restyled to Figma 3.5 in Phase 6b): grid · long-press drag reorder · rotate / delete per page · Select mode · Add page (Camera or Photos) · Save as PDF.
+- [x] **Editor** (`editor_screen.dart`, `crop_editor.dart`, restyled to Figma 3.3 / 3.4 in Phase 6b): Crop (corner + edge handles, convexity guard, **loupe** opposite the finger, Auto / Full page / Perspective preview, Rotate, Retake) → Enhance (swipe pages, pinch zoom, rotate, filters with live thumbnails, brightness / contrast, Apply to all).
 - [x] Non-destructive pages (`session.dart`): the original photo is kept; the preview is re-rendered at 1600 px on each edit; stale renders are dropped.
 - [x] **PDF** (`lib/src/export/pdf_export.dart`): each page rendered at 3508 px (A4 @ 300 dpi) in parallel, JPEG embedded as-is, page size = scan aspect at A4 width, saved to app documents.
 - [x] Semantics labels on icon buttons.
@@ -435,11 +437,89 @@ The app's scanner grew to eight modes. To keep a big host app clean, the whole f
   - It returns `null` when the user closes the scanner.
   - `ScannerTab` picks the starting mode. Measure starts after the first layout, because AR needs the viewport aspect.
 - **Behaviour change.** Review → **Done** is always available and returns the pages. Previously it only appeared after an export, because the scanner was the whole app.
+  Phase 6b: Done became **Save as PDF** (Figma 3.5), and Save Book (9.2) / Save PDF (9.3, 9.4) return the same way. The review no longer exports or shares itself, so `ScanResult.pdf` is null from the review; the host builds the PDF with `toPdf` and shows its own "Scan saved!" (3.6).
 - **The host app keeps only** a dependency on this package, a portrait lock, permission strings and a call to `Scanner.open`. Transitive plugins (image_picker, share_plus, url_launcher, path_provider) register automatically.
 - **Tests.**
-  - 53 unit and widget tests in `test/`, including `scanner_api_test.dart` for the host contract (Done returns pages, Close returns null, `tab` picks the mode).
+  - 53 unit and widget tests in `test/`, including `scanner_api_test.dart` for the host contract (Done returns pages, Close returns null, `tab` picks the mode). (62 after Phase 6b.)
   - 12 on-device tests in `example/integration_test/`, all passing on the Pixel 6.
   - The host app and the example both build.
+
+---
+
+## Phase 6b: Figma UI match + OCR channel 🟡
+
+**Figma** (file `pSGWv3vGBBC3nkIcu0rknu`): 3.1 `22:1177` / `94:6306`, 3.2 `22:1237`, 3.3 `94:5726`, 3.4 `94:5794`, 3.5 `94:5943`,
+7.1 `22:3195`, 9.1 `22:4114`, 9.2 `22:4204`, 9.3 `22:4281`, 9.4 `22:4371`.
+
+### Status (2026-09-30)
+Built and covered by widget tests; every screen was rendered at 393×852 with Inter + Iconsax and compared with the Figma
+frames. Android debug APK builds. iOS Swift type-checks against the iOS 15 SDK (Catalyst, with Flutter stubs; ARKit file
+excluded). **Not yet run on a device.**
+
+### Design system
+- [x] `ui.dart`: exact tokens copied from the host (`Tone` camera colours, `Palette` light + dark picked from the ambient
+  `Theme` brightness, Figma text styles without a font family so Inter comes from the host, `Shadows`, squircles at 60%
+  smoothing via `figma_squircle`). Icons are Iconsax (`iconsax_plus`); Figma "rotate-left/right" = `rotate_left_1` /
+  `rotate_right_1`, "close" = `add` turned 45°.
+- [x] Shared pieces: `LightScreen` (52 pt nav bar + bottom actions as the bottom bar, so toasts float above buttons),
+  `ScanButton` (54 pt, r16; primary / secondary / tonal / danger), `SquareButton`, `NavCircle`, `NavText`, `InfoBanner`,
+  `Segmented` (sliding), `ScanToggle`, `ImageChip`, `Appear` (staggered fade + rise), `Pressable` (0.97 press scale).
+- Pitfall found by the renders: `AnimatedDefaultTextStyle` *replaces* the inherited style, dropping Inter. Use
+  `AnimatedStyle` (merges).
+
+### Screens
+- [x] **3.1 / 3.2 camera**: Iconsax top bar (52 pt), AUTO pill, vignette, dashed guide 262×340, detected quad (brand 18% fill,
+  corner dots r6 + 4 pt ring), Footnote pills, 13 pt mode tabs with 5 pt dot, 78 pt shutter (colour animates), 48 pt gallery
+  and page stack (tilted second page + badge). Book uses the titled bar (9.1).
+- [x] **7.1 ID camera**: sides switch, 4 pt / 26 pt brackets on the Figma 322×214 frame, info pill.
+- [x] **9.1 Book camera**: solid spread guide with dashed fold line (follows the detected spread), "Left · n / Right · n+1"
+  chips with the page numbers this spread will get. The pill says "Pages split automatically" (see not built).
+- [x] **3.3 Adjust Crop** (`CropScreen`): photo at 353 pt wide, r24, light veil, round corner handles + pill edge handles,
+  96 pt loupe with crosshair; Rotate · Auto · Perspective (renders the straightened crop) · Full page; Reset; Retake; Next →
+  Enhance. Nothing is saved before Next.
+- [x] **3.4 Enhance** (`EnhanceScreen`): 400 pt preview with "Page i of n", filter tiles (Original, Magic, B & W, Gray,
+  No Shadow, Color) with live thumbnails, brightness / contrast sliders (the change shows instantly via a colour matrix that
+  matches the native curve, then the native render replaces it), Apply to all (filter + sliders, not the crop), rotate.
+- [x] **3.5 Review**: "N Pages", Select (multi-select → rotate / delete N with Undo), reorder hint, page cards with rotate /
+  delete, dashed Add page card (Camera or Photos), edit (→ Enhance), Save as PDF → `ScanResult`.
+- [x] **9.2 Book Result** (after every spread): "Pages a–b", page pair, **Split into two pages** toggle (off = one `Spread`
+  page), "N spreads scanned · 2N pages", Back / Next Spread → camera, Done → review, Save Book → `ScanResult`.
+- [x] **9.3 ID Card Result** (after the back side): sheet preview, Stacked / Side by side / Separate (drives the PDF: A4
+  stacked, A4 landscape side by side, or one page per side), Extracted details from the card's TD1 MRZ when it has one
+  (otherwise it says there's nothing verified to extract), copy per field / Copy all, share, Retake / Save PDF.
+- [x] **9.4 Passport Result** (replaces the MRZ sheet): data-page thumbnail, surname / given names, MRZ verified, detail
+  tiles, validity banner (orange; red once expired), Copy All, share, Save PDF.
+
+### Not built (the engine can't do it honestly yet)
+- 9.1 / 9.2 "Curves flattened", "Flatten page curves", "Remove fingers & edges": no dewarp or inpainting in the engine
+  (backlog). The toggles are left out and the pill doesn't claim flattening.
+- 9.4 "Issued": the MRZ has no issue date, so that tile shows the issuing country. Nationality shows the ICAO code
+  (e.g. `PAK`), not the country name.
+- 9.4 portrait: shows the scanned data page (left-aligned, where ICAO puts the photo), not a face crop.
+- 7.1 right-hand "card" button: purpose unclear in the design; the page stack shows there once pages exist.
+
+### New engine parts (channel change: Kotlin, Swift, `engine.dart`, contract table above)
+- [x] `process` gains `brightness` / `contrast` (Android `convertTo`, iOS `CIColorMatrix`, same curve) and two filters:
+  `noShadow` (paper-divide without ink deepening) and `color` (saturation ×1.4, contrast ×1.15).
+- [x] `recognizeText(path, script)` → `List<TextBlock>` (`TextBlock {text, box, lines}`, exported). Android: ML Kit;
+  Latin bundled, Chinese / Devanagari / Japanese / Korean via the unbundled Play Services artifacts
+  (`play-services-mlkit-text-recognition-*:16.0.1`, models download on first use → `MODEL_UNAVAILABLE` until then).
+  iOS: `VNRecognizeTextRequest` `.accurate` + language correction, languages mapped per script; Vision reports lines, so
+  each iOS block is one line.
+- [ ] Measure on a device: filter / slider render times, `recognizeText` accuracy and speed per script, APK size delta.
+
+### Tests
+- `test/engine_test.dart`: `Detection` / `TextBlock` parsing, `recognizeText` arguments + errors, `process` arguments.
+- `test/review_flow_test.dart`: review select / delete / undo / rotate / Save as PDF; crop → enhance (Full page + Rotate
+  saved only on Next, filter, slider → `brightness`, Apply to all); book split toggle; ID layouts ↔ export grouping, MRZ
+  details and the no-MRZ message.
+- Updated: `scanner_screen_test.dart` (passport → 9.4 screen, camera released meanwhile), `scanner_api_test.dart`
+  (Save as PDF returns the pages). 62 tests pass.
+
+### Acceptance
+- [ ] Walk every screen above on the Pixel 6 in light and dark mode against the Figma frames (no ID/passport photos on screen
+  capture, per the privacy rules).
+- [ ] `recognizeText` on real printed pages in each script.
 
 ---
 

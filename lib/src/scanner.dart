@@ -6,7 +6,8 @@ import 'scanner/session.dart';
 /// Entry point for host apps: the whole scanner (document, ID card, passport, book, QR, math, count, measure) as
 /// one full-screen flow.
 abstract final class Scanner {
-  /// Pushes the scanner and completes with the kept pages when the user taps Done, or null if they close it.
+  /// Pushes the scanner and completes with the kept pages when the user saves (review "Save as PDF", "Save Book",
+  /// ID / passport "Save PDF"), or null if they close it. The PDF itself is the host's job ([ScanResult.toPdf]).
   /// QR, math, count and measure results are shown inside the scanner; count results the user saves become
   /// pages too.
   ///

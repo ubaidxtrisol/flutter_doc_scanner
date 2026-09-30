@@ -33,6 +33,12 @@ class ScanPage {
   int rotation = 0;
   PageFilter filter = PageFilter.magic;
 
+  /// -1..1, 0 = unchanged (see [DocScanner.process]).
+  double brightness = 0, contrast = 0;
+
+  /// Grouped ID pages: front and back side by side on a landscape sheet instead of stacked.
+  bool sideBySide = false;
+
   /// Latest screen-size render; null until the first render finishes.
   String? preview;
   int _version = 0;
@@ -47,12 +53,21 @@ class ScanPage {
       rotation: rotation,
       filter: filter,
       maxSize: previewSize,
+      brightness: brightness,
+      contrast: contrast,
     );
     if (version != _version) return File(out).delete().ignore(); // a newer edit won
     final old = preview;
     preview = out;
     if (old != null) File(old).delete().ignore();
   }
+}
+
+/// Default document name: "Scan 2026-09-30 14.05".
+String defaultTitle([DateTime? at]) {
+  final d = at ?? DateTime.now();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return 'Scan ${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}.${two(d.minute)}';
 }
 
 /// What [Scanner.open] returns when the user taps Done: the pages they kept, in order.

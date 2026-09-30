@@ -10,8 +10,8 @@ This package is the app's whole **scanner module**: a native camera + detection 
 ## Layout
 | Path | What |
 |---|---|
-| `lib/src/engine.dart` | Dart side of the native channels: `DocScanner` (camera, detections, capture, analyze, process), `ArMeasure`, `QuadTracker`, preview widgets |
-| `lib/src/scanner/` | Camera screen (`scanner_screen.dart`, all tabs), overlays, review (`pages_screen.dart`), editor + crop, result sheets, session model, MRZ / QR / book logic, `ui.dart` design tokens (`Tone`) |
+| `lib/src/engine.dart` | Dart side of the native channels: `DocScanner` (camera, detections, capture, analyze, process, recognizeText), `ArMeasure`, `QuadTracker`, preview widgets |
+| `lib/src/scanner/` | Camera screen (`scanner_screen.dart`, all tabs), overlays, review (`pages_screen.dart`), crop + enhance (`editor_screen.dart`, `crop_editor.dart`), book / ID / passport result screens (`result_screens.dart`), QR / math sheets, session model, MRZ / QR / book logic, `ui.dart` design tokens + shared widgets |
 | `lib/src/count/` | Object counter: pure-Dart `counter.dart` (runs in an isolate) + `count_screen.dart` |
 | `lib/src/math/` | `solver.dart` (on-device exact solver) + `cloud.dart` (optional backend, `--dart-define=MATH_API_URL`) |
 | `lib/src/measure/` | AR measure: `geometry.dart` (projection, area, plane fit, ray-plane) + `measure.dart` (controller, painter, controls) |
@@ -32,7 +32,7 @@ This package is the app's whole **scanner module**: a native camera + detection 
   - Native streams world points, the center hit (+ normal and kind) and the view-projection matrix; Dart projects and draws.
   - The first point locks the surface; later points and drags are ray ∩ plane.
   - Android anchors attach to the locked plane or the hit trackable.
-- Styling comes from `Tone` in `lib/src/scanner/ui.dart` (eyeballed from `docs/figma`).
+- Styling comes from `lib/src/scanner/ui.dart`: exact Figma tokens (`Tone` for the camera, `Palette` light/dark from the ambient theme brightness), Figma text styles (no font family: Inter comes from the host), Iconsax icons, 60% squircles, and the shared widgets (`LightScreen`, `ScanButton`, …). Never hard-code colours in screens. Figma file `pSGWv3vGBBC3nkIcu0rknu`; node ids per screen are in the phases doc (Phase 6b).
 
 ## Commands
 ```sh
@@ -51,6 +51,8 @@ Format with **`dart format -l 120`**. The code is 120 columns and uses one-line 
 - Tabs can be off-screen: `ensureVisible` before tapping, and let the scroll animation settle before `tap`.
 - `Isolate.run` closures must not capture a `State` (the error is "object is unsendable"). Use top-level functions (see `countInBackground`).
 - In the integration harness, a `Texture` only repaints while the test pumps frames. A single long `runAsync` shows a black preview.
+- `AnimatedDefaultTextStyle` replaces the inherited style and drops the host font; use `AnimatedStyle` from `ui.dart`.
+- Visual checks without a device: render a screen in a widget test at 393×852 (dpr 2, padding top 54 / bottom 34), load Inter from the host's `assets/fonts` and the Iconsax fonts as `packages/iconsax_plus/IconsaxPlusLinear|Bold` with `FontLoader`, then `RepaintBoundary.toImage` inside `runAsync`. Mock `process` to copy the input so previews exist.
 
 ## Device work: privacy rules (non-negotiable)
 - The user's phone holds **real ID card and passport photos**, both in the photo library and in captures in the app cache.
