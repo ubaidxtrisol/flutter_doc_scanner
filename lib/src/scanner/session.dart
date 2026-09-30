@@ -5,6 +5,7 @@ import 'package:flutter/painting.dart';
 
 import '../engine.dart';
 import '../export/pdf_export.dart';
+import '../scanner.dart';
 
 /// Long side of on-screen page renders. Exports render at full quality separately.
 const previewSize = 1600;
@@ -31,7 +32,7 @@ class ScanPage {
   /// Crop quad TL, TR, BR, BL, normalized. Null = whole image.
   List<Offset>? corners;
   int rotation = 0;
-  PageFilter filter = PageFilter.magic;
+  PageFilter filter = Scanner.defaultFilter;
 
   /// -1..1, 0 = unchanged (see [DocScanner.process]).
   double brightness = 0, contrast = 0;

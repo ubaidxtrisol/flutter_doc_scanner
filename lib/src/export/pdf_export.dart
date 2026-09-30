@@ -5,10 +5,9 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../engine.dart';
+import '../scanner.dart';
 import '../scanner/session.dart';
 
-/// Long side of exported pages: A4 at 300 dpi.
-const _exportSize = 3508;
 
 /// Renders every page at print quality and writes `<name>.pdf` to the app documents folder.
 /// Each PDF page takes the scan's own aspect ratio at A4 width, so receipts aren't shrunk onto A4;
@@ -26,7 +25,7 @@ Future<File> exportPdf(List<ScanPage> pages, String name) async {
           corners: p.corners,
           rotation: p.rotation,
           filter: p.filter,
-          maxSize: _exportSize,
+          maxSize: Scanner.exportSize,
           brightness: p.brightness,
           contrast: p.contrast,
         );

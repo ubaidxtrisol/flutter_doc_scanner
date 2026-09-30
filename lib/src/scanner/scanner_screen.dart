@@ -12,6 +12,7 @@ import '../count/count_screen.dart';
 import '../math/cloud.dart';
 import '../math/solver.dart';
 import '../measure/measure.dart';
+import '../scanner.dart';
 import 'book.dart';
 import 'mrz.dart';
 import 'overlays.dart';
@@ -75,7 +76,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   String? error;
   StreamSubscription<Detection>? detections;
   QuadState state = QuadState.searching;
-  bool armed = true, torch = false, grid = false, auto = true;
+  bool armed = true, torch = false, grid = false, auto = Scanner.autoCapture;
   bool starting = false, busy = false, away = false, sheetOpen = false;
   late ScannerTab tab = widget.initialTab;
 

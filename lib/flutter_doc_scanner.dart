@@ -6,5 +6,6 @@ library;
 export 'src/engine.dart';
 export 'src/export/pdf_export.dart' show exportPdf;
 export 'src/scanner.dart';
+export 'src/scanner/editor_screen.dart' show filterNames;
 export 'src/scanner/scanner_screen.dart' show ScannerScreen, ScannerTab;
 export 'src/scanner/session.dart' show ScanPage, ScanResult;
