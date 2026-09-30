@@ -1,15 +1,20 @@
 name: flutter_doc_scanner
-description: "Camera + on-device detection engine for the scanner app (iOS Vision, Android CameraX + OpenCV)."
+description: "Scanner module: native camera + detection engine (Android CameraX/OpenCV/ML Kit/ARCore, iOS Vision/ARKit) and the complete Flutter scanner UI."
 version: 1.0.0
 publish_to: none
 
 environment:
-  sdk: ^3.5.0
-  flutter: ">=3.27.0"
+  sdk: ^3.9.0
+  flutter: ">=3.35.0"
 
 dependencies:
   flutter:
     sdk: flutter
+  image_picker: ^1.2.3
+  path_provider: ^2.1.6
+  pdf: ^3.13.1
+  share_plus: ^13.3.0
+  url_launcher: ^6.3.2
   vector_math: ^2.1.4
 
 dev_dependencies:
