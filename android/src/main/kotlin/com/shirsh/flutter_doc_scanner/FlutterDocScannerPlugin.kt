@@ -132,6 +132,9 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
             "arMove" -> ar?.move(call.argument<Int>("index")!!, call.argument<List<Double>>("at")!!) {
                 main.post { result.success(null) }
             } ?: result.success(null)
+            "arSnapshot" -> ar?.snapshot(File(File(context.cacheDir, "scans"), "ar_${System.currentTimeMillis()}.jpg")) { reply, error ->
+                main.post { if (reply != null) result.success(reply) else result.error("AR_SNAPSHOT", error, null) }
+            } ?: result.error("AR_NOT_RUNNING", "AR isn't running", null)
             "arUndo" -> result.success(ar?.undo())
             "arClear" -> result.success(ar?.clear())
             "arTorch" -> result.success(ar?.setTorch(call.argument<Boolean>("on") == true))
@@ -233,7 +236,7 @@ class FlutterDocScannerPlugin : FlutterPlugin, ActivityAware, MethodChannel.Meth
                         gray.release()
                         mapOf("corners" to quad?.let { DocVision.order(DocVision.rotate(it, rot)) }?.toList())
                     }
-                    "qr", "passport", "math" -> {
+                    "qr", "passport" -> { // math: no live analysis, the shutter photo goes to AI
                         val input = InputImage.fromMediaImage(image.image ?: return, rot)
                         val (w, h) = if (rot % 180 == 0) image.width to image.height else image.height to image.width
                         if (m == "qr") mapOf("codes" to Readers.codes(input, w, h))

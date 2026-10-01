@@ -10,7 +10,7 @@ Tracker for the scanner module (this package): the camera + detection engine and
 | 0 | Planning & decisions | — | ✅ Complete |
 | 1 | Camera engine + Document scanner (edge detect, auto-capture, crop, multi-page, PDF) | 3.1, 3.2 | 🟡 Current: built, acceptance pending |
 | 2 | QR, ID Card, Passport (MRZ), Book | 7.1, 7.2, 7.3 | 🟡 Current: built, acceptance pending |
-| 3 | Math scanner (hybrid on-device + cloud LLM) | 7.4 | 🟡 Current: on-device built; cloud backend not decided |
+| 3 | Math scanner (AI only) | 7.4 | 🟡 Current: AI (host hook → OpenAI gpt-5-mini) built; real-sample acceptance pending |
 | 4 | Object counter | 7.5 | 🟡 Current: built, real-object acceptance pending |
 | 5 | AR area measurement | 7.6 | 🟡 Current: Android built, real-floor acceptance pending |
 | 6 | Scanner as a self-contained module (plugin) | — | ✅ Complete |
@@ -41,7 +41,7 @@ is drawn in Flutter**.
 | Android doc edges | **OpenCV** (`org.opencv:opencv` from Maven Central) | Proven contour pipeline. Chosen over a hand-rolled detector for accuracy. **Measured:** arm64 release APK is 45 MB, and the full prebuilt OpenCV is roughly 35 MB of that. ponytail: fix = a custom OpenCV build with only `core` + `imgproc` + `imgcodecs` (a few MB) when app size matters. |
 | Android camera | CameraX (Preview + ImageAnalysis + ImageCapture) | Handles device quirks. |
 | Text / barcode (Ph 2+) | iOS Vision; Android ML Kit (bundled models) | On-device, fast, offline. |
-| Math (Ph 3) | **Hybrid**: simple → on-device Dart solver; complex → cloud LLM through our backend | Instant + offline for common cases, and full coverage for the rest. |
+| Math (Ph 3) | **AI only** (2026-10-01, user decision; was hybrid): every problem goes to an AI model through the host's `Scanner.onlineMath` hook (the module holds no keys) | One consistent answer style (LaTeX steps) for every problem, handwriting included. Costs a network call per problem; the local solver it replaced was instant and offline. |
 | Smoothing / stability | In **Dart** (shared) | One implementation, unit-testable, cheap (8 numbers per frame). |
 | PDF export | Dart `pdf` package, embedding JPEG bytes as-is (no re-encode) | One implementation, fast. |
 | Gallery import | `image_picker` → native `detect(path)` for corners | Don't rebuild a picker. |
@@ -178,7 +178,24 @@ iOS testing is deferred to the end by decision. Remaining: the real-sample accep
 - [x] Square brackets + sweeping scan line (runs only while the QR tab is scanning, so no idle frame cost).
 - [x] First decode → haptic → result sheet (Figma 7.3). The same code isn't re-shown for 3 s after dismissing.
 - [x] `qr_payload.dart` (pure Dart, unit-tested): Website / Wi-Fi / Email / Phone / SMS / Location / Contact / Text → icon, label, primary action (`url_launcher`, copy password, or share) + Copy.
-- [x] Gallery: decode a code from a photo.
+- [x] Detailed fields per kind (`QrPayload.fields`, 9 tests in `test/qr_payload_test.dart`): URL full link · Wi-Fi network,
+  security (WPA/WPA2, WPA3/SAE, WEP, open), hidden flag, EAP method/identity · vCard 2.1–4.0 (folded lines, escapes,
+  `item1.` groups, `N` fallback) and MECARD (repeated keys, `Last,First`) → name, organization, job title, phones,
+  emails, websites, addresses, note · mailto (subject/body) / MATMSG / bare address · `SMSTO:`/`MMSTO:`/`sms:?body=` ·
+  `geo:` (coordinates, altitude, `q=` place; `0,0?q=` = address search; out-of-range → text) · tel. Malformed `%`
+  escapes never throw. Save title `QR · <display>` ≤ 40 characters (never the password, never cuts an emoji).
+- [x] Sheet (`result_sheets.dart`, `test/qr_sheet_test.dart`): header, the code **re-generated** from the raw value
+  (`qr` package, byte mode UTF-8, ECC M, or L when too long for M; modules snapped to device pixels), a label/value
+  table (selectable), full selectable text for Text codes. Content scrolls inside 60% of the screen; actions stay
+  pinned: Copy · Share (text + the code as a PNG) · kind action · **Save to Documents**.
+- [x] Wi-Fi password hidden (dots) until the eye is tapped; never in the title or header.
+- [x] Save to Documents renders an A4 card (`QrCard` via `renderCard`): "QR Code · <kind>", the code (200 pt), up to 8
+  field rows (the password included: the user chose to save), the raw content clipped with "…" to the space left,
+  and the date + "Scanned with DocScan". It joins the scan as a page (see "Result cards join the scan" below).
+- [x] Errors: empty / binary-only payload → "This code is empty" / "Couldn't read this code" + Scan Again; too long to
+  re-encode → info banner and a text-only card; a failed save, share or launch shows a message in the sheet (a snack
+  bar would sit behind it); geo: falls back to a Google Maps web link when no app takes `geo:` (iOS).
+- [x] Gallery: decode a code from a photo; it opens the same sheet with the same Save.
 
 ### ID Card (7.1)
 - [x] Card-shaped detection: long/short side **1.45–1.85** (ID-1 is 1.586; A4 is 1.414 and is rejected square-on), minimum 6% of the frame.
@@ -198,7 +215,7 @@ iOS testing is deferred to the end by decision. Remaining: the real-sample accep
 - [ ] Page-curl dewarp stays in the **backlog**.
 
 ### Tests
-- Unit: `test/mrz_test.dart`, `test/qr_payload_test.dart`, `test/book_test.dart`, plus `test/scanner_screen_test.dart` (fake native engine: every mode's chrome and hint, QR sheet, passport 2-read → capture → verified sheet). This test caught and fixed two overflows (pills and the Front/Back switch at large text) and a scan-line ticker that burned frames in every mode.
+- Unit: `test/mrz_test.dart`, `test/qr_payload_test.dart`, `test/qr_sheet_test.dart` (fields, generated code, password toggle, Save → PNG page, text-only card, unreadable code, failed save), `test/book_test.dart`, plus `test/scanner_screen_test.dart` (fake native engine: every mode's chrome and hint, QR sheet, passport 2-read → capture → verified sheet). This test caught and fixed two overflows (pills and the Front/Back switch at large text) and a scan-line ticker that burned frames in every mode.
 - On device (`example/integration_test/scanner_vision_test.dart`, Pixel 6): card found / A4 rejected in ID mode ✓ · QR decoded in 127 ms ✓ · rendered MRZ OCR'd + verified in 253 ms ✓ · book fold within 2% ✓.
 
 ### Acceptance
@@ -212,56 +229,101 @@ iOS testing is deferred to the end by decision. Remaining: the real-sample accep
 
 **Figma:** `docs/figma/7.4 Math Scanner.png`
 
-### Status (2026-09-29)
-The on-device path is built and tested on Android. The cloud path's **app client** is built against the contract below,
-but **no backend exists yet** (decision: "decide later"). Until `MATH_API_URL` is set, anything the local solver can't
-handle shows "This problem needs the online solver, which isn't set up yet." Nothing is ever sent anywhere.
-iOS parity is written, untested (deferred).
+### Status (2026-10-01)
+**AI only** (changed 2026-10-01 at the user's request; the on-device solver is no longer called). Every problem goes
+to the **host's AI hook** (`Scanner.onlineMath`). The DocScan app wires it to OpenAI (`lib/features/scan/math_ai.dart` in the host), so the module
+holds no keys and no backend is needed. Without the hook, the pill and the sheet say AI solving isn't set up, and
+nothing is sent anywhere. iOS parity is written, untested (deferred).
 
 ### Flow (as built)
-1. **Live:** the `math` analyzer returns all text lines + boxes. `pickMathLine` picks the most math-looking one (locally
-   solvable > has `=` > closest to center), and a blue box highlights it (7.4).
-2. If the local solver handles it and the **same problem is read in 2 consecutive frames**, the answer sheet opens by
-   itself with no photo taken. Dismissing it doesn't reopen the same problem for 3 s.
-3. **Shutter** (or gallery): full-res photo → OCR → local solver; if unsupported → cloud with the OCR text + photo
-   (word problems with no single math line send all the text).
-4. Sheet (7.4): type · step count · problem as read · green Answer card · numbered steps. Spinner while the cloud works;
-   a friendly error when offline, timed out or not configured. A cloud badge marks online answers.
+1. **No live detection** (2026-10-01, user request): the camera runs no analyzer in Math (`math` live frames are
+   skipped natively on Android and iOS), nothing is highlighted, and the pill reads "Point at a math problem, then
+   tap the shutter" ("Solving math needs AI, which isn't set up" without the hook; the shutter then only toasts and
+   takes no photo).
+2. **Shutter** (or gallery): full-res photo → the sheet opens at once with the loader → photo downscaled to ≤ 1280 px
+   (the original is sent if that fails) → AI. No OCR runs and no text is sent; the AI reads the problem from the photo,
+   so handwriting works the same as print.
+3. Sheet (`math_sheet.dart`, 7.4): type · step count · "Solved with AI" badge · problem · green Answer card · numbered
+   steps (title + math). AI answers are LaTeX rendered with `flutter_math_fork` (a step whose LaTeX doesn't parse
+   falls back to its plain text; wide math scrolls sideways). A solution without LaTeX shows plain text in the same styles.
+   While the AI works: "Solving with AI…" with a pulsing sparkle and shimmer lines. Errors show the message + Retry
+   (Retry re-runs the solve; hidden when there's no hook).
+4. **Copy** puts the plain-text solution on the clipboard. **Save to Documents** renders A4 cards (`renderCard`):
+   "Math solution" header, the photo, problem, answer, every step with LaTeX, footer with the time and page number.
+   Steps are split across pages (4 next to the photo, 6 without, then 9 per page; a page that still overflows is
+   scaled to fit). All pages go to the scanner's `_savePages` titled "Math · <answer>" (≤ 40 chars) and join the
+   scan, so several problems become one PDF (see "Result cards join the scan" below).
 
-### On-device solver (`lib/src/math/solver.dart`, pure Dart)
+### Result cards join the scan (2026-10-01, user request)
+Math, QR, Area and Count cards no longer end the scan. `_savePages` (`scanner_screen.dart`) adds the card's pages to
+the session (Original filter, `ScanPage.result` = its title), then `showAddedSheet` (`result_sheets.dart`) asks:
+**Solve another problem / Scan another code / Measure another area / Count more objects** (default, and what
+dismissing means: stay on the camera), **Review** (the pages screen), or **Save PDF** (finish). "Scan another code"
+doesn't reopen the code just saved while it's in view; "Measure another area" clears the AR shape. No QR / MRZ sheet
+opens over the prompt. The document title comes from `scanTitle`: one card keeps its own title ("Math · x = 5"),
+several of one kind get "Math solutions" / "QR codes" / "Area measurements" / "Count results", anything else (photos
+or mixed kinds) gets the dated default. The host's Scan Complete screen words these as "Math solutions saved!" etc.
+Tests: `test/scanner_screen_test.dart` (two QR cards → "Scan another code", same code not reopened, "2 pages so far",
+Save PDF → 2 pages titled "QR codes"), `test/measure_screen_test.dart` (prompt, then Save PDF → "Area · 1.00 m²").
+
+### On-device solver (`lib/src/math/solver.dart`, pure Dart): **retired 2026-10-01**, code kept but not called
 - [x] Tokenizer + recursive-descent parser: numbers, decimals, one variable, `+ − × ÷ ^`, parentheses, implicit multiplication (`2x`, `2(x+1)`, `(x+1)(x−1)`).
 - [x] OCR normalization: unicode operators, `²` `³`, `×` read for the variable x ("2× + 5"), `O`/`l` glued to digits.
 - [x] Exact rational arithmetic (`BigInt`): `0.1 + 0.2 = 3/10`, `x = 3/5 ≈ 0.6`.
 - [x] Arithmetic with one step per operation in order of operations; linear equations (Figma wording: "Subtract 5 from both sides → 2x = 15 − 5 → Simplify → Divide both sides by 2"), no-solution / every-x cases; quadratics (discriminant, rational / irrational / complex / repeated roots); expression simplification.
-- [ ] 2×2 linear systems: **not built**. They go to the cloud. Add locally if usage shows it matters.
+- [ ] 2×2 linear systems: **not built**. They go to the AI. Add locally if usage shows it matters.
 - Unit tests: `test/math_solver_test.dart` (Figma example in exactly 3 steps, linear, quadratic, arithmetic, OCR look-alikes, cloud-routing cases, line picking).
 
-### Cloud path (`lib/src/math/cloud.dart`)
-- [x] Client: enabled by `--dart-define=MATH_API_URL=https://…`, 10 s connect / 15 s response timeout, in-memory cache by normalized text, response validated before use.
-- [ ] **Backend** (open: Cloudflare Worker / Firebase / your own). It holds the Claude API key and must implement:
+### AI path (`lib/src/math/cloud.dart` → host hook)
+- [x] Module: `solveInCloud` downsizes the photo to ≤ 1280 px (JPEG), calls `Scanner.onlineMath('', image)` (no OCR text, no
+  cache: every photo is its own problem), and turns any failure into a `CloudMathException` with the host's
+  user-facing message. `MathStep.tex` / `MathSolution.answerTex` / `problemTex` carry LaTeX.
+- [x] Host (`lib/features/scan/math_ai.dart`): `OpenAi.json` with strict structured output
+  `{solvable, reason, type, problem_latex, problem_text, answer_latex, answer_text, steps: [{title, latex, text}]}`.
+  The prompt asks it to trust the photo over garbled OCR, verify the answer before writing it, use 3–10 steps, emit
+  KaTeX-compatible LaTeX without `$` delimiters, and answer in the problem's language. `solvable: false` (not math,
+  unreadable) shows the model's one-line reason instead of an answer. Stray `$…$` / `\[…\]` delimiters are stripped,
+  empty steps dropped, and a reply without an answer or steps is an error. Model: `--dart-define=OPENAI_MATH_MODEL`,
+  default `gpt-5-mini` (reasoning `low`, 12k token cap, 60 s timeout). Registered in the host's `main.dart` when
+  `OPEN_AI_KEY` is set.
+- Model choice, **measured 2026-10-01** (Mac → OpenAI over Wi-Fi, not on the phone): 6 problems rendered as ruled-paper
+  photos (1280 × 560 JPEG) + deliberately garbled OCR text (exponents flattened, "J" for ∫), 2 runs each. The problems
+  were a quadratic `2x² + 3x − 2 = 0`, a 2×2 system, `∫₀² (3x² + 2x) dx`, `d/dx (x² · sin x)`, `(x² − 9)/(x² + 5x + 6)`
+  and a ticket word problem.
 
-```
-POST {MATH_API_URL}/solve
-Content-Type: application/json
-{ "text": "<OCR text>", "image": "<base64 JPEG, long side ≤ 1280, optional>" }
+  | Model | Correct | Median | p90 | Max | LaTeX that failed to parse |
+  |---|---|---|---|---|---|
+  | `gpt-4.1-mini` (temperature 0) | **8 / 12** | 4.6 s | 6.6 s | 9.0 s | 0 |
+  | `gpt-5-mini` (reasoning `low`) | **12 / 12** | 5.3 s | 5.9 s | 6.1 s | 1 (a `$` inside `\text{}`; fell back to plain text, prompt now asks for `\$`) |
 
-200 → { "type": "Linear equation",
-        "answer": "x = 5",
-        "steps": [ { "title": "Subtract 5 from both sides", "expr": "2x = 15 − 5" }, … ] }
-non-200 → the app shows "The online solver had a problem (code)".
-```
-  The backend should call Claude (current Sonnet model) with the image + text, force this JSON shape (tool use /
-  structured output), validate it, and apply auth + rate limits + a cost cap.
+  gpt-4.1-mini's misses repeated in both runs. On the quadratic it left an unfinished formula as the "answer". On the
+  integral it trusted the OCR `3x2` over the photo and answered 20/3. Accuracy wins, so the default is gpt-5-mini
+  (~0.7 s slower at the median).
+- Live smoke (host `solveMathWithAi`, gpt-5-mini, system photo + OCR text): `x = 3, y = 2`, 5 steps, 6.6 s.
+- Photo only, no OCR text (2026-10-01, gpt-5-mini, Mac → OpenAI): quadratic `x = 1/2, x = −2` 6.7 s, integral `12`
+  5.4 s, system `x = 3, y = 2` 4.2 s, word problem `a = 20` 4.9 s: 4 / 4 correct.
 
 ### Tests
-- Widget (`test/scanner_screen_test.dart`): a problem seen twice → sheet with "Linear equation · 3 steps · x = 5" and no photo taken; an unsupported problem waits for the shutter.
+- Widget (`test/scanner_screen_test.dart`): live text events are ignored (nothing found, AI not called); the shutter
+  sends just the photo to the hook (no `analyze` call) and the sheet shows its answer with the AI badge; without the
+  hook the pill says AI isn't set up and the shutter takes no photo.
+- Bug fixed on the way (seen in the Pixel's log): `pickMathLine` called the old parser, which threw
+  `FormatException: Could not parse BigInt` on some OCR text, so the shutter silently did nothing. Math no longer
+  calls it.
+- Widget (`test/math_sheet_test.dart`): on-device answer as plain text + Copy; AI answer with LaTeX (5 `Math` widgets),
+  bad LaTeX → its text, a 22-term line doesn't overflow; loading → error → Retry → answer; no Retry without the hook;
+  Save renders 2 A4 pages (1488 × 2105 px) for 12 steps + photo, named "Math · x = 1/2, x = −2"; page split and title
+  rules.
+- Host (`test/math_ai_test.dart`): JSON → `MathSolution` mapping, delimiter stripping, `solvable: false` reason,
+  empty answer / steps rejected.
 - On device (Pixel 6): a printed `2x + 5 = 15` on ruled paper → ML Kit read it exactly → `x = 5`, **175 ms** OCR + solve.
+  The AI path has not been run on the phone yet.
 
 ### Acceptance
 - [x] Local: 100% of the unit-test problem set; answer shown < 300 ms after the problem is read.
-- [ ] Real samples: 20 printed textbook problems + 10 handwritten (ML Kit Latin OCR is weak on handwriting, fractions and exponents; those should fall through to the cloud).
-- [ ] Cloud: correct on a 30-problem mixed set; p90 latency < 6 s (needs the backend).
-- [x] The router never sends a problem the local solver can handle to the cloud (by construction: cloud is only called when `solveLocally` returns null).
+- [ ] Real samples: 20 printed textbook problems + 10 handwritten (ML Kit Latin OCR is weak on handwriting, fractions and exponents; those should fall through to the AI).
+- [ ] AI: correct on a 30-problem mixed set; p90 latency < 6 s. So far: 12 / 12 on the 6-problem rendered set, p90 5.9 s from a Mac; needs the full set on the phone.
+- [x] The router never sends a problem the local solver can handle to the AI (by construction: the AI is only called when `solveLocally` returns null).
 
 ---
 
@@ -294,12 +356,13 @@ no-op mode natively.
 - [x] Count tab → shutter or gallery → result screen: photo with numbered green markers · "Objects detected" + big count · −/+ stepper · Round / Boxes / Custom chips · Retake · Save Result.
 - [x] Tap a marker to remove it; tap empty space to add one. −/+ adjust the count without a marker (− removes the last marker once those are used up).
 - [x] Custom: "Tap one object to count ones like it" → recount by that colour and size.
-- [x] Save Result burns the markers + an "N objects" badge into a ~2000 px image → added to the scan as a page labelled "Count: N" (Original filter) → exportable as PDF.
-- [ ] Save to the phone's photo gallery. Not built (it needs a new plugin); share via PDF export for now.
+- [x] Save Result renders an **A4 card** (`renderCard` + `PhotoCard`, `lib/src/scanner/card_render.dart`): "Object count", the photo (upright, ≤ 1600 px) with the numbered markers burned in, then "23 objects", the kind (Round objects / Boxes / Custom, "matched to a tapped sample"), the automatic count, what was changed by hand ("2 added · 1 removed": markers vs the automatic set, plus stepper adds), and a footer with the date + "Counted with DocScan". It pops a page labelled "Count: N" (Original filter); the scanner adds it to the scan and asks to count more or save (see "Result cards join the scan").
+- [x] Save errors: busy spinner on the button (double taps ignored); a failed render shows "Couldn't save the result. Try again." and leaves the screen as it was; closing the screen mid-render doesn't pop the scanner underneath.
+- [ ] Save to the phone's photo gallery. Not built (it needs a new plugin); the card goes to Documents and can be shared from there.
 
 ### Tests
 - Unit (`test/counter_test.dart`): 23 Figma-style buttons with highlights · touching objects split · markers on the objects in reading order · boxes vs sticks · Custom colour match · faint objects on white · empty table = 0 · speed.
-- Widget (`test/count_screen_test.dart`): real decode + isolate + UI, stepper, Custom prompt, kind switch. It caught a real crash: the isolate closure captured the widget State (fixed with a top-level `countInBackground`).
+- Widget (`test/count_screen_test.dart`): real decode + isolate + UI, stepper, Custom prompt, kind switch; Save Result → one marker removed → pops a "Count: 9" page whose card PNG exists, and the temp copy is deleted. It caught a real crash: the isolate closure captured the widget State (fixed with a top-level `countInBackground`).
 - On device (Pixel 6): 23 buttons with shadows + highlights → **23**, 558 ms for the full pipeline in a *debug* build.
 
 ### Acceptance
@@ -327,6 +390,7 @@ no-op mode natively.
 | `arUndo` / `arClear` | – | – (detach last / all anchors) |
 | `arTorch` | `{on}` | – (ARCore `Config.FlashMode.TORCH`; iOS torch on the AR camera) |
 | `arStop` | – | – (pause + close session, release texture) |
+| `arSnapshot` | – | `{path, points, vp}`: JPEG (q 90, cache `scans/`) of exactly what the AR view shows (camera only, viewport aspect) plus the points and view-projection matrix **of that same frame**, so Dart's overlay matches the photo exactly (the event stream can be a frame off). Android: `glReadPixels` of the next drawn frame before swap, flipped + encoded off the GL thread. iOS: `ARSCNView.snapshot()` + `currentFrame`. Errors: `AR_NOT_RUNNING`, `AR_SNAPSHOT`; Dart adds `AR_TIMEOUT` (no frame in 5 s) |
 
 Event channel `flutter_doc_scanner/ar`, one event per camera frame (30 fps): `{tracking, reason, hit?: [x,y,z], points: [x,y,z,…], vp: [16, column-major]}`. Anchors are re-read each frame, so points follow ARCore/ARKit's map refinements.
 
@@ -375,6 +439,7 @@ Limit: an object hanging in free air (no wall or detected plane behind it) start
   - **+:** disabled off-surface. It drops a point, closes the shape when the reticle is on the first point, and starts a new shape after a closed one.
   - **m / ft:** toggles cm·m·m² / in·ft·ft².
   - **Tap the first point:** closes the shape.
+- **Save measurement** (not in Figma; styled like the area card): a white pill that pops in above the bottom bar once a closed shape has an area (hidden while dragging a corner). It shows "Saving…" with a spinner while exporting and ignores more taps. `MeasureController.exportCard` takes `arSnapshot`, paints the shape on it with `MeasurePainter` in still mode (same dashed edges, points, length pills and area card, plus point names A, B, C…; no reticle or tape) at the live overlay's scale, crops to a square-ish band around the shape, and renders an A4 card: "Area measurement", the photo, the area in the current unit with the other unit small, perimeter, every side ("A–B 3.1 m · B–C 2.4 m …"), the point count, and a footer with the date + "Measured with DocScan AR · approx. ±5%". Title `Area · 6.84 m²`, page label "Area". A failed snapshot shows its message as a toast.
 - The overlay has a live-region semantics summary ("Area 6.84 m². Sides 3.1 m, …") for screen readers, which the tests also use.
 
 ### Geometry (`lib/src/measure/geometry.dart`)
@@ -403,6 +468,7 @@ Limit: an object hanging in free air (no wall or detected plane behind it) start
   - map correction: anchors shift 4 cm → the next point follows the live first anchor
   - jittery first hit (±12 mm) → placed at the 6-frame mean
   - walls: a noisy depth hit starts the shape; a blank wall (no hits) still takes points on the locked plane; edge-on aim refuses with "Aim back at the same surface"
+  - save: no Save before the shape closes; close → "Save measurement" appears; tap → busy, a second tap doesn't snapshot again; the scanner returns one page (label "Area", Original filter) whose 1488 × 2105 card PNG exists, title "Area · 1.00 m²", and the snapshot JPEG is deleted
 - On device (Pixel 6, `example/integration_test/ar_measure_test.dart`):
   - frames stream at camera rate (~30 fps, measured with a temporary native fps log in the real app; the test harness itself pumps slower)
   - tracking reached, center hits on real surfaces
@@ -414,7 +480,7 @@ Limit: an object hanging in free air (no wall or detected plane behind it) start
 - [ ] Within ±5% of tape-measured values on a 2×3 m floor area (Android, Pixel 6). Report the numbers here.
 - [ ] Wall area and a hanging object (frame / TV) within ±5%, after the surface lock fix.
 - [ ] Within ±3% on a LiDAR iPhone (with the iOS pass at the end).
-- Not built: saving a measurement to the scan pages (not in Figma; add like Count's Save Result if wanted).
+- [x] Save a measurement to Documents as a card page (built and widget-tested; the `arSnapshot` GL readback is not verified on a device yet).
 
 ---
 

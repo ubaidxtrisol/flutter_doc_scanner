@@ -9,7 +9,7 @@ The app's complete scanner as one plugin: a native camera + detection engine and
 | Passport | Reads and validates the MRZ (ICAO 9303 check digits) |
 | Book | Splits an open spread into two pages at the fold |
 | QR | QR codes and barcodes, with actions for URL / Wi-Fi / contact / … |
-| Math | Reads a printed problem and solves it step by step (on device, optional cloud) |
+| Math | Photograph a problem (printed or handwritten); the host's AI solves it step by step in LaTeX |
 | Count | Counts objects in a photo; tap to fix; save as a page |
 | Measure | AR area and lengths on floors, walls and hanging objects, with draggable corners |
 
@@ -56,7 +56,10 @@ if (result != null) {
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Import photos of documents to scan.</string>
     ```
-- **Math cloud solver (optional):** build with `--dart-define=MATH_API_URL=https://…`. The contract is in the docs. Without it, math works on device only.
+- **Math solver (required for Math):** set `Scanner.onlineMath` before opening the scanner. It gets an empty text and a JPEG of the photo (≤ 1280 px)
+  (the module runs no OCR for math; read the problem from the photo), and returns a `MathSolution` (steps with LaTeX in
+  `MathStep.tex`). Throw an exception whose `toString()` is user-facing. The module holds no keys; the host calls its
+  own AI or server. Without the hook, the Math tab says solving isn't set up.
 
 The lower-level engine (`DocScanner`, `ArMeasure`, `ScannerPreviewView`, `QuadTracker`) is exported too, for building custom screens.
 

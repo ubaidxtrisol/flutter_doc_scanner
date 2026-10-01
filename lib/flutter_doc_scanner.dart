@@ -4,6 +4,7 @@
 library;
 
 export 'src/engine.dart';
+export 'src/math/solver.dart' show MathSolution, MathStep;
 export 'src/export/pdf_export.dart' show exportPdf;
 export 'src/scanner.dart';
 export 'src/scanner/editor_screen.dart' show filterNames;

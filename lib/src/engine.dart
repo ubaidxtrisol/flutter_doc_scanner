@@ -275,6 +275,21 @@ abstract final class ArMeasure {
     'at': [at.x, at.y, at.z],
   });
 
+  /// JPEG of exactly what the AR view shows (viewport aspect, camera only) and the frame it shows: points and
+  /// view-projection matrix of that very frame, so an overlay drawn from them lines up with the photo exactly.
+  /// Throws [PlatformException]: `AR_NOT_RUNNING`, `AR_SNAPSHOT` (capture failed), `AR_TIMEOUT` (no frame in 5 s).
+  static Future<(String, ArFrame)> snapshot() async {
+    final m = await _channel
+        .invokeMapMethod<String, Object?>('arSnapshot')
+        .timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => throw PlatformException(code: 'AR_TIMEOUT', message: 'The camera stopped. Try again.'),
+        );
+    final path = m?['path'] as String?;
+    if (path == null) throw PlatformException(code: 'AR_SNAPSHOT', message: 'No snapshot');
+    return (path, ArFrame.fromMap({...m!, 'tracking': 'tracking'}));
+  }
+
   static Future<void> undo() => _channel.invokeMethod('arUndo');
 
   static Future<void> clear() => _channel.invokeMethod('arClear');

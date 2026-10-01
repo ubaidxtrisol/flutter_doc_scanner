@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../engine.dart';
+import '../scanner/card_render.dart';
 import '../scanner/session.dart';
 import '../scanner/ui.dart';
 import 'counter.dart';
@@ -14,11 +15,10 @@ const _sub = Color(0xFF6B7280);
 
 /// Figma 7.5: the photo with numbered markers, and a sheet with the count, −/+ stepper, kind chips,
 /// Retake and Save Result. Tap a marker to remove it, tap empty space to add one.
-/// Pops `true` after saving the result as a page into [session].
+/// Pops the result as a [ScanPage] ("Count: N") on Save Result, or null on close.
 class CountScreen extends StatefulWidget {
-  const CountScreen({super.key, required this.photo, required this.session});
+  const CountScreen({super.key, required this.photo});
   final String photo;
-  final ScanSession session;
 
   @override
   State<CountScreen> createState() => _CountScreenState();
@@ -27,6 +27,7 @@ class CountScreen extends StatefulWidget {
 class _CountScreenState extends State<CountScreen> {
   CountKind kind = CountKind.round;
   List<Offset> marks = [];
+  List<Offset> found = []; // the automatic count's markers, to tell hand edits apart on the saved card
   int extra = 0; // stepper adjustments without a placed marker
   double radius = .03; // marker radius, fraction of image width
   (double, double)? sample;
@@ -61,18 +62,20 @@ class _CountScreenState extends State<CountScreen> {
     if (kind == CountKind.custom && sample == null) {
       setState(() {
         marks = [];
+        found = [];
         extra = 0;
         counting = false;
       });
       return;
     }
     setState(() => counting = true);
-    final found = await countInBackground(rgba!, w, h, kind, sample: sample);
+    final counted = await countInBackground(rgba!, w, h, kind, sample: sample);
     if (!mounted) return;
     HapticFeedback.lightImpact();
     setState(() {
-      marks = [for (final c in found) Offset(c.x, c.y)];
-      if (found.isNotEmpty) radius = found.first.r;
+      found = [for (final c in counted) Offset(c.x, c.y)];
+      marks = List.of(found);
+      if (counted.isNotEmpty) radius = counted.first.r;
       extra = 0;
       counting = false;
     });
@@ -99,38 +102,86 @@ class _CountScreenState extends State<CountScreen> {
     setState(() => hit >= 0 ? marks.removeAt(hit) : marks.add(n));
   }
 
-  /// Burns markers + count into a ~2000 px copy and adds it to the scan as a page.
+  /// The photo with its markers burned in, on an A4 card with the count, kind and hand edits underneath.
+  /// Pops it as a page ("Count: N"); a failure leaves the screen as it was, with a message.
   Future<void> _save() async {
+    if (saving) return;
     setState(() => saving = true);
-    final dir = File(widget.photo).parent.path;
-    final stamp = DateTime.now().millisecondsSinceEpoch;
-    final base = '$dir/count_${stamp}_base.jpg', png = '$dir/count_$stamp.png', out = '$dir/count_$stamp.jpg';
-    await DocScanner.process(path: widget.photo, outPath: base, maxSize: 2000);
-    final image = (await (await ui.instantiateImageCodec(await File(base).readAsBytes())).getNextFrame()).image;
-    final size = Size(image.width.toDouble(), image.height.toDouble());
-    final rec = ui.PictureRecorder();
-    final canvas = Canvas(rec)..drawImage(image, Offset.zero, Paint());
-    _MarksPainter(marks, radius, Offset.zero & size, scale: size.width / 390).paint(canvas, size);
-    _badge(canvas, '$total object${total == 1 ? '' : 's'}', size.width / 390);
-    final rendered = await rec.endRecording().toImage(image.width, image.height);
-    final bytes = await rendered.toByteData(format: ui.ImageByteFormat.png);
-    await File(png).writeAsBytes(bytes!.buffer.asUint8List());
-    await DocScanner.process(path: png, outPath: out); // PNG → JPEG
-    File(base).delete().ignore();
-    File(png).delete().ignore();
-    widget.session.add(ScanPage(out, null, label: 'Count: $total')..filter = PageFilter.original);
-    if (mounted) Navigator.of(context).pop(true);
+    final base = '${widget.photo}.card.jpg';
+    try {
+      await DocScanner.process(path: widget.photo, outPath: base, maxSize: 1600); // upright, card-sized
+      final photo = await decodeForCard(base);
+      ui.Image? marked;
+      try {
+        final size = Size(photo.width.toDouble(), photo.height.toDouble());
+        final rec = ui.PictureRecorder();
+        final canvas = Canvas(rec)..drawImage(photo, Offset.zero, Paint());
+        _MarksPainter(marks, radius, Offset.zero & size, scale: size.width / 390).paint(canvas, size);
+        final picture = rec.endRecording();
+        marked = await picture.toImage(photo.width, photo.height);
+        picture.dispose();
+        if (!mounted) return;
+        final png = await renderCard(
+          context,
+          PhotoCard(
+            title: 'Object count',
+            photo: marked,
+            details: _details(),
+            note: 'Counted with DocScan',
+            time: DateTime.now(),
+          ),
+        );
+        // Closed (back gesture, Close) while rendering: don't pop the scanner underneath.
+        if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return File(png).delete().ignore();
+        Navigator.of(context).pop(ScanPage(png, null, label: 'Count: $total')..filter = PageFilter.original);
+      } finally {
+        photo.dispose();
+        marked?.dispose();
+      }
+    } catch (_) {
+      if (mounted) showToast(context, "Couldn't save the result. Try again.");
+    } finally {
+      File(base).delete().ignore();
+      if (mounted) setState(() => saving = false);
+    }
   }
 
-  void _badge(Canvas canvas, String text, double s) {
-    final tp = TextPainter(
-      text: TextSpan(text: text, style: TextStyle(color: Colors.white, fontSize: 16 * s, fontWeight: FontWeight.w700)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final r = RRect.fromRectAndRadius(
-        Rect.fromLTWH(12 * s, 12 * s, tp.width + 24 * s, tp.height + 12 * s), Radius.circular(10 * s));
-    canvas.drawRRect(r, Paint()..color = Tone.success);
-    tp.paint(canvas, Offset(24 * s, 18 * s));
+  /// "23 objects", kind, and what was changed by hand vs the automatic count.
+  Widget _details() {
+    const p = Palette.light;
+    final added = marks.where((m) => !found.contains(m)).length + extra;
+    final removed = found.where((m) => !marks.contains(m)).length;
+    final edits = [if (added > 0) '$added added', if (removed > 0) '$removed removed'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text.rich(
+          TextSpan(
+            text: '$total',
+            style: TextStyles.title3.copyWith(
+              fontSize: 30,
+              height: 1.2,
+              fontWeight: FontWeight.w700,
+              color: p.textPrimary,
+            ),
+            children: [
+              TextSpan(
+                text: total == 1 ? '  object' : '  objects',
+                style: TextStyles.headline.copyWith(color: p.textSecondary),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        CardFact('Kind', switch (kind) {
+          CountKind.round => 'Round objects',
+          CountKind.boxes => 'Boxes',
+          CountKind.custom => 'Custom',
+        }, note: kind == CountKind.custom ? 'matched to a tapped sample' : null),
+        CardFact('Automatic', '${found.length}'),
+        CardFact('By hand', edits.isEmpty ? 'No changes' : edits.join(' · ')),
+      ],
+    );
   }
 
   @override
@@ -139,120 +190,160 @@ class _CountScreenState extends State<CountScreen> {
       value: SystemUiOverlayStyle.light,
       child: Scaffold(
         backgroundColor: Tone.chrome,
-        body: Column(children: [
-          SafeArea(
-            bottom: false,
-            child: SizedBox(
-              height: 56,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(children: [
-                  ChipButton(icon: Icons.close_rounded, label: 'Close', onTap: () => Navigator.of(context).pop()),
-                  const Expanded(
-                    child: Text('Count Objects',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600)),
+        body: Column(
+          children: [
+            SafeArea(
+              bottom: false,
+              child: SizedBox(
+                height: 56,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(
+                    children: [
+                      ChipButton(icon: Icons.close_rounded, label: 'Close', onTap: () => Navigator.of(context).pop()),
+                      const Expanded(
+                        child: Text(
+                          'Count Objects',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      const SizedBox(width: 40),
+                    ],
                   ),
-                  const SizedBox(width: 40),
-                ]),
+                ),
               ),
             ),
-          ),
-          Expanded(child: _photo()),
-          _sheet(),
-        ]),
+            Expanded(child: _photo()),
+            _sheet(),
+          ],
+        ),
       ),
     );
   }
 
   Widget _photo() {
     if (rgba == null) return const Center(child: CircularProgressIndicator());
-    return LayoutBuilder(builder: (context, box) {
-      final aspect = w / h;
-      final fit = box.maxWidth / box.maxHeight > aspect
-          ? Size(box.maxHeight * aspect, box.maxHeight)
-          : Size(box.maxWidth, box.maxWidth / aspect);
-      final rect = Rect.fromCenter(center: box.biggest.center(Offset.zero), width: fit.width, height: fit.height);
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapUp: (d) {
-          if (rect.contains(d.localPosition)) {
-            _tap(Offset((d.localPosition.dx - rect.left) / rect.width, (d.localPosition.dy - rect.top) / rect.height));
-          }
-        },
-        child: Stack(children: [
-          Positioned.fromRect(
-            rect: rect,
-            child: Image(
-              image: ResizeImage(FileImage(File(widget.photo)), width: 1600, height: 1600, policy: ResizeImagePolicy.fit),
-              fit: BoxFit.fill,
-            ),
+    return LayoutBuilder(
+      builder: (context, box) {
+        final aspect = w / h;
+        final fit = box.maxWidth / box.maxHeight > aspect
+            ? Size(box.maxHeight * aspect, box.maxHeight)
+            : Size(box.maxWidth, box.maxWidth / aspect);
+        final rect = Rect.fromCenter(center: box.biggest.center(Offset.zero), width: fit.width, height: fit.height);
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) {
+            if (rect.contains(d.localPosition)) {
+              _tap(
+                Offset((d.localPosition.dx - rect.left) / rect.width, (d.localPosition.dy - rect.top) / rect.height),
+              );
+            }
+          },
+          child: Stack(
+            children: [
+              Positioned.fromRect(
+                rect: rect,
+                child: Image(
+                  image: ResizeImage(
+                    FileImage(File(widget.photo)),
+                    width: 1600,
+                    height: 1600,
+                    policy: ResizeImagePolicy.fit,
+                  ),
+                  fit: BoxFit.fill,
+                ),
+              ),
+              Positioned.fill(child: CustomPaint(painter: _MarksPainter(marks, radius, rect))),
+              if (counting) const Center(child: CircularProgressIndicator(color: Colors.white)),
+              if (kind == CountKind.custom && sample == null)
+                const Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: 24,
+                  child: Center(
+                    child: StatusPill(icon: Icons.touch_app_outlined, text: 'Tap one object to count ones like it'),
+                  ),
+                ),
+            ],
           ),
-          Positioned.fill(child: CustomPaint(painter: _MarksPainter(marks, radius, rect))),
-          if (counting) const Center(child: CircularProgressIndicator(color: Colors.white)),
-          if (kind == CountKind.custom && sample == null)
-            const Positioned(
-              left: 16,
-              right: 16,
-              bottom: 24,
-              child: Center(child: StatusPill(icon: Icons.touch_app_outlined, text: 'Tap one object to count ones like it')),
-            ),
-        ]),
-      );
-    });
+        );
+      },
+    );
   }
 
   Widget _sheet() => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(color: const Color(0xFFD1D5DB), borderRadius: BorderRadius.circular(2)),
-                ),
+    decoration: const BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    child: SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(color: const Color(0xFFD1D5DB), borderRadius: BorderRadius.circular(2)),
               ),
-              const SizedBox(height: 14),
-              Row(children: [
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
                 Expanded(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Objects detected', style: TextStyle(color: _sub, fontSize: 14)),
-                    Text('$total',
-                        style: const TextStyle(color: _ink, fontSize: 44, fontWeight: FontWeight.w800, height: 1.1)),
-                  ]),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Objects detected', style: TextStyle(color: _sub, fontSize: 14)),
+                      Text(
+                        '$total',
+                        style: const TextStyle(color: _ink, fontSize: 44, fontWeight: FontWeight.w800, height: 1.1),
+                      ),
+                    ],
+                  ),
                 ),
                 Container(
                   padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(color: const Color(0xFFF1F2F4), borderRadius: BorderRadius.circular(14)),
-                  child: Row(children: [
-                    _step(Icons.remove_rounded, 'Remove one', total == 0 ? null : () {
-                      setState(() => extra > 0 ? extra-- : marks.removeLast());
-                    }),
-                    const SizedBox(width: 6),
-                    _step(Icons.add_rounded, 'Add one', () => setState(() => extra++)),
-                  ]),
+                  child: Row(
+                    children: [
+                      _step(
+                        Icons.remove_rounded,
+                        'Remove one',
+                        total == 0
+                            ? null
+                            : () {
+                                setState(() => extra > 0 ? extra-- : marks.removeLast());
+                              },
+                      ),
+                      const SizedBox(width: 6),
+                      _step(Icons.add_rounded, 'Add one', () => setState(() => extra++)),
+                    ],
+                  ),
                 ),
-              ]),
-              const SizedBox(height: 14),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(children: [
+              ],
+            ),
+            const SizedBox(height: 14),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
                   _chip(CountKind.round, Icons.radio_button_checked_rounded, 'Round objects'),
                   const SizedBox(width: 8),
                   _chip(CountKind.boxes, Icons.view_in_ar_outlined, 'Boxes'),
                   const SizedBox(width: 8),
                   _chip(CountKind.custom, Icons.auto_awesome_outlined, 'Custom'),
-                ]),
+                ],
               ),
-              const SizedBox(height: 16),
-              Row(children: [
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
                 Expanded(
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
@@ -279,30 +370,34 @@ class _CountScreenState extends State<CountScreen> {
                     onPressed: counting || saving || rgba == null ? null : _save,
                     icon: saving
                         ? const SizedBox.square(
-                            dimension: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
                         : const Icon(Icons.check_circle_outline_rounded),
                     label: const Text('Save Result'),
                   ),
                 ),
-              ]),
-            ]),
-          ),
+              ],
+            ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 
   Widget _step(IconData icon, String label, VoidCallback? onTap) => Semantics(
-        button: true,
-        label: label,
-        child: Material(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(10),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: onTap,
-            child: SizedBox.square(dimension: 44, child: Icon(icon, color: onTap == null ? Colors.black26 : _ink)),
-          ),
-        ),
-      );
+    button: true,
+    label: label,
+    child: Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: SizedBox.square(dimension: 44, child: Icon(icon, color: onTap == null ? Colors.black26 : _ink)),
+      ),
+    ),
+  );
 
   Widget _chip(CountKind k, IconData icon, String label) {
     final on = kind == k;
@@ -316,11 +411,17 @@ class _CountScreenState extends State<CountScreen> {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: on ? Tone.accent : const Color(0xFFD1D5DB)),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 16, color: on ? Colors.white : _ink),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: on ? Colors.white : _ink, fontSize: 14, fontWeight: FontWeight.w500)),
-        ]),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: on ? Colors.white : _ink),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(color: on ? Colors.white : _ink, fontSize: 14, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
       ),
     );
   }

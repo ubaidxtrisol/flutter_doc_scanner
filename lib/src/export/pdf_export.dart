@@ -8,7 +8,6 @@ import '../engine.dart';
 import '../scanner.dart';
 import '../scanner/session.dart';
 
-
 /// Renders every page at print quality and writes `<name>.pdf` to the app documents folder.
 /// Each PDF page takes the scan's own aspect ratio at A4 width, so receipts aren't shrunk onto A4;
 /// grouped pages (ID front + back) share one A4 sheet at real card size.

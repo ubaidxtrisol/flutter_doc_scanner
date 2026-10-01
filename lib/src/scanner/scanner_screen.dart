@@ -10,7 +10,6 @@ import 'package:image_picker/image_picker.dart';
 import '../engine.dart';
 import '../count/count_screen.dart';
 import '../math/cloud.dart';
-import '../math/solver.dart';
 import '../measure/measure.dart';
 import '../scanner.dart';
 import 'book.dart';
@@ -19,6 +18,7 @@ import 'overlays.dart';
 import 'pages_screen.dart';
 import 'qr_payload.dart';
 import 'result_screens.dart';
+import 'math_sheet.dart';
 import 'result_sheets.dart';
 import 'session.dart';
 import 'ui.dart';
@@ -78,6 +78,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   QuadState state = QuadState.searching;
   bool armed = true, torch = false, grid = false, auto = Scanner.autoCapture;
   bool starting = false, busy = false, away = false, sheetOpen = false;
+
+  // The "added to your scan" sheet is up: no QR / MRZ sheet may open over it.
+  bool prompting = false;
   late ScannerTab tab = widget.initialTab;
 
   // ID card: front then back, both in one group so they export onto one sheet.
@@ -89,16 +92,6 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   // Passport: the same valid MRZ must be read twice in a row before we trust it.
   String? mrzKey;
   int mrzHits = 0;
-
-  // Math: the same locally-solvable problem read twice in a row opens the answer by itself.
-  final mathBox = ValueNotifier<Rect?>(null);
-  String? mathKey;
-  int mathHits = 0;
-  bool mathLocal = false;
-
-  // QR / math: don't reopen the sheet for what the user just dismissed.
-  String? lastMath;
-  DateTime lastMathClosed = DateTime(0);
 
   // QR: don't reopen the sheet for the code the user just dismissed.
   String? lastCode;
@@ -187,63 +180,29 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     mrzBox.value = null;
     mrzKey = null;
     mrzHits = 0;
-    mathBox.value = null;
-    mathKey = null;
-    mathHits = 0;
-    mathLocal = false;
     state = QuadState.searching;
     armed = true;
   }
 
   void _onDetection(Detection d) {
-    if (sheetOpen || busy || d.mode != tab.mode?.name) return;
+    if (sheetOpen || busy || prompting || d.mode != tab.mode?.name) return;
     if (tab.quad) {
       _onQuad(d.corners);
     } else if (tab == ScannerTab.qr && d.codes.isNotEmpty) {
       _showQr(d.codes.first.value);
     } else if (tab == ScannerTab.passport) {
       _onMrzLines(d.lines);
-    } else if (tab == ScannerTab.math) {
-      _onMathLines(d.lines);
     }
   }
 
-  void _onMathLines(List<TextLine> lines) {
-    final picked = pickMathLine([for (final l in lines) (l.text, l.box.center.dy)]);
-    if (picked == null) {
-      if (mathBox.value != null) setState(_resetDetection);
-      return;
-    }
-    mathBox.value = lines.firstWhere((l) => l.text == picked).box;
-    final key = normalizeMath(picked);
-    final local = solveLocally(picked);
-    setState(() {
-      mathHits = key == mathKey ? mathHits + 1 : 1;
-      mathLocal = local != null;
-    });
-    mathKey = key;
-    final recentlyClosed = key == lastMath && DateTime.now().difference(lastMathClosed) < const Duration(seconds: 3);
-    if (local != null && mathHits >= 2 && !recentlyClosed) _showMath(Future.value(local), key);
-  }
-
-  Future<void> _showMath(Future<MathSolution> solving, String key) async {
+  /// Math has no live detection: the shutter (or a gallery photo) goes straight to the AI ([Scanner.onlineMath]),
+  /// which reads the problem from the photo. The sheet shows the loader, the answer, Retry and Save.
+  Future<void> _solvePhoto(String photo) async {
+    if (Scanner.onlineMath == null) return _toast("Solving math needs AI, which isn't set up in this app.");
     setState(() => sheetOpen = true);
     HapticFeedback.mediumImpact();
-    await showMathSheet(context, solving);
-    lastMath = key;
-    lastMathClosed = DateTime.now();
+    await showMathSheet(context, () => solveInCloud(photo), photo: photo, onSave: _savePages);
     if (mounted) setState(() => sheetOpen = false);
-  }
-
-  /// OCR a photo (sharper than live frames), then solve on device, else in the cloud.
-  Future<void> _solvePhoto(String photo) async {
-    final lines = (await DocScanner.analyzeFile(photo, ScanMode.math)).lines;
-    final picked = pickMathLine([for (final l in lines) (l.text, l.box.center.dy)]);
-    // Word problems have no single "math line": send all the text to the cloud.
-    final text = picked ?? lines.map((l) => l.text).join('\n');
-    if (text.trim().isEmpty) return _toast("Couldn't find a math problem. Try getting closer.");
-    final local = solveLocally(text);
-    await _showMath(local != null ? Future.value(local) : solveInCloud(text, photo: photo), normalizeMath(text));
   }
 
   void _onQuad(List<Offset>? corners) {
@@ -325,14 +284,62 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   }
 
   /// Returns every kept page to the host (review "Save as PDF", "Save Book", "Save PDF").
-  void _finish() => Navigator.of(context).pop(ScanResult(List.of(session.pages), title: defaultTitle()));
+  void _finish() => Navigator.of(context).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages)));
+
+  /// A result card (QR, measure, count): see [_savePages].
+  Future<bool> _saveResult(ScanPage page, String title) => _savePages([page], title);
+
+  /// Result cards (math, QR, measure, count) join the scan as pages, then the user picks: add another (stay on the
+  /// camera), review the pages, or save the PDF. Closes any sheet or screen over the camera first. Returns true when
+  /// the user left the camera (saved, or went to review, which resumes the camera itself).
+  Future<bool> _savePages(List<ScanPage> pages, String title) async {
+    for (final page in pages) {
+      page
+        ..filter = PageFilter
+            .original // the card is already final; filters would tint it
+        ..result = title;
+    }
+    HapticFeedback.mediumImpact();
+    Navigator.of(context).popUntil((r) => r.settings.name == 'scanner');
+    session.retakeIndex = null; // a card never replaces a photo being retaken
+    for (final page in pages) {
+      await session.add(page);
+    }
+    if (!mounted) return true;
+    prompting = true;
+    final action = await showAddedSheet(context, title: title, pages: session.pages.length);
+    prompting = false;
+    lastCodeClosed = DateTime.now(); // "Scan another code" mustn't reopen the code just saved while it's still in view
+    if (!mounted) return true;
+    switch (action) {
+      case AddedAction.save:
+        _finish();
+        return true;
+      case AddedAction.review:
+        await _openPages();
+        return true;
+      case AddedAction.another || null:
+        return false;
+    }
+  }
+
+  /// Measure's Save: the AR view with the shape, area and sides as a card (see [MeasureController.exportCard]).
+  Future<void> _saveMeasure() async {
+    try {
+      final card = await measure.exportCard(context);
+      // "Measure another" starts from an empty view rather than the shape just saved.
+      if (card != null && mounted && !await _saveResult(card.$1, card.$2)) await measure.clear();
+    } on PlatformException catch (e) {
+      _toast(e.message ?? "Couldn't capture the measurement. Try again.");
+    }
+  }
 
   Future<void> _showQr(String value) async {
     if (value == lastCode && DateTime.now().difference(lastCodeClosed) < const Duration(seconds: 3)) return;
     setState(() => sheetOpen = true);
     HapticFeedback.mediumImpact();
     scanLine.stop();
-    await showQrSheet(context, QrPayload.parse(value));
+    await showQrSheet(context, QrPayload.parse(value), onSave: _saveResult);
     lastCode = value;
     lastCodeClosed = DateTime.now();
     if (!mounted) return;
@@ -342,6 +349,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   Future<void> _shoot() async {
     if (busy || preview == null || tab.mode == null || tab == ScannerTab.qr) return;
+    if (tab == ScannerTab.math && Scanner.onlineMath == null) {
+      return _toast("Solving math needs AI, which isn't set up in this app.");
+    }
     busy = true;
     if (tab == ScannerTab.math || tab == ScannerTab.count) {
       final kind = tab;
@@ -396,7 +406,23 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     }
   }
 
+  /// Picker or reader failures (photo access denied, unreadable file) become a toast instead of failing silently.
   Future<void> _importFromGallery() async {
+    try {
+      await _importFromGalleryUnguarded();
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      _toast(
+        e.code == 'photo_access_denied'
+            ? 'Allow photo access in Settings to import.'
+            : "Couldn't read that image. Try another one.",
+      );
+    } on FileSystemException {
+      if (mounted) _toast("Couldn't open that image. Try another one.");
+    }
+  }
+
+  Future<void> _importFromGalleryUnguarded() async {
     final picker = ImagePicker();
     final mode = tab.mode ?? ScanMode.document;
     if (tab == ScannerTab.qr || tab == ScannerTab.passport || tab == ScannerTab.math || tab == ScannerTab.count) {
@@ -477,15 +503,13 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     away = true;
     await _stop();
     if (!mounted) return;
-    final saved = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => CountScreen(photo: photo, session: session),
-      ),
-    );
+    final page = await Navigator.of(
+      context,
+    ).push<ScanPage>(MaterialPageRoute(builder: (_) => CountScreen(photo: photo)));
     away = false;
     if (!mounted) return;
-    if (saved == true) _toast('Count saved to your pages');
-    _start();
+    if (page != null && await _saveResult(page, page.label ?? 'Count')) return; // saved, or review resumes the camera
+    if (mounted) _start();
   }
 
   Future<void> _openPages() async {
@@ -726,7 +750,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   }
 
   /// Changes whenever the pill's message does, so it cross-fades instead of snapping.
-  Object get _pillKey => (tab, state, armed, idBack, mrzHits > 0, mathKey == null, mathLocal, auto);
+  Object get _pillKey => (tab, state, armed, idBack, mrzHits > 0, auto);
 
   List<Widget> _overlays(ScannerPreview p) => switch (tab) {
     ScannerTab.document => [CustomPaint(painter: QuadPainter(quad, p.size, guideAspect: 262 / 340))],
@@ -758,11 +782,6 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         painter: BracketsPainter(aspect: _passportAspect, color: Colors.white),
       ),
       CustomPaint(painter: HighlightPainter(mrzBox, p.size, color: Tone.success)),
-    ],
-    ScannerTab.math => [
-      CustomPaint(
-        painter: HighlightPainter(mathBox, p.size, color: Tone.accent, fill: Colors.white.withValues(alpha: .35)),
-      ),
     ],
     ScannerTab.qr => [
       CustomPaint(painter: BracketsPainter(aspect: 1, color: Tone.accent)),
@@ -911,11 +930,13 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       case ScannerTab.count:
         return const StatusPill(icon: IconsaxPlusLinear.shapes, text: 'Point at the objects, then tap the shutter');
       case ScannerTab.math:
-        const find = StatusPill(icon: IconsaxPlusLinear.calculator, text: 'Point at a math problem');
-        if (mathKey == null) return find;
-        return mathLocal
-            ? const StatusPill(icon: ok, text: 'Problem found · Hold steady', color: Tone.success)
-            : const StatusPill(icon: info, text: 'Tap the shutter to solve');
+        if (Scanner.onlineMath == null) {
+          return const StatusPill(icon: info, text: "Solving math needs AI, which isn't set up");
+        }
+        return const StatusPill(
+          icon: IconsaxPlusLinear.calculator,
+          text: 'Point at a math problem, then tap the shutter',
+        );
       case ScannerTab.passport:
         return mrzHits > 0
             ? const StatusPill(icon: ok, text: 'MRZ detected · Hold steady', color: Tone.success)
@@ -1011,7 +1032,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             child: tab == ScannerTab.measure
                 ? SizedBox(
                     height: 78,
-                    child: MeasureControls(c: measure, onAdd: _addPoint),
+                    child: MeasureControls(c: measure, onAdd: _addPoint, onSave: _saveMeasure),
                   )
                 : Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1087,10 +1108,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   Widget _shutter() {
     final enabled = tab.mode != null && preview != null;
-    final found =
-        (tab.quad && state != QuadState.searching && armed) ||
-        (tab == ScannerTab.passport && mrzHits > 0) ||
-        (tab == ScannerTab.math && mathKey != null);
+    final found = (tab.quad && state != QuadState.searching && armed) || (tab == ScannerTab.passport && mrzHits > 0);
     return Semantics(
       button: true,
       label: 'Capture',

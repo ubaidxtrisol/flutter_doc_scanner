@@ -22,7 +22,6 @@ class PagesScreen extends StatefulWidget {
 }
 
 class _PagesScreenState extends State<PagesScreen> {
-  final title = defaultTitle();
   final selected = <ScanPage>{};
   bool selecting = false;
 
@@ -186,7 +185,9 @@ class _PagesScreenState extends State<PagesScreen> {
                         child: ScanButton(
                           'Save as PDF',
                           icon: IconsaxPlusLinear.document_download,
-                          onPressed: () => Navigator.of(context).pop(ScanResult(List.of(session.pages), title: title)),
+                          onPressed: () => Navigator.of(
+                            context,
+                          ).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages))),
                         ),
                       ),
                     ],

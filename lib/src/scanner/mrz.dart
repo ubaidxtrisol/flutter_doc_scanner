@@ -34,7 +34,8 @@ class Mrz {
     final clean = [for (final l in lines) _clean(l)].where((l) => l.length >= 28).toList();
     for (var i = 0; i < clean.length; i++) {
       final rest = clean.sublist(i);
-      final r = (rest.length >= 3 ? _td1(rest[0], rest[1], rest[2], now) : null) ??
+      final r =
+          (rest.length >= 3 ? _td1(rest[0], rest[1], rest[2], now) : null) ??
           (rest.length >= 2 ? _td3(rest[0], rest[1], now) ?? _td2(rest[0], rest[1], now) : null);
       if (r != null) return r;
     }
@@ -62,8 +63,18 @@ class Mrz {
     if (!_ok(l2.substring(28, 42), checks[3], allowEmpty: true)) return null;
     final composite = '$doc${checks[0]}$birth${checks[1]}$expiry${checks[2]}${l2.substring(28, 42)}${checks[3]}';
     if (!_ok(composite, checks[4])) return null;
-    return _build('TD3', l1.substring(0, 2), l1.substring(2, 5), l1.substring(5), doc, l2.substring(10, 13), birth,
-        l2[20], expiry, now);
+    return _build(
+      'TD3',
+      l1.substring(0, 2),
+      l1.substring(2, 5),
+      l1.substring(5),
+      doc,
+      l2.substring(10, 13),
+      birth,
+      l2[20],
+      expiry,
+      now,
+    );
   }
 
   static Mrz? _td2(String a, String b, DateTime? now) {
@@ -74,8 +85,18 @@ class Mrz {
     if (!_ok(doc, checks[0]) || !_ok(birth, checks[1]) || !_ok(expiry, checks[2])) return null;
     final composite = '$doc${checks[0]}$birth${checks[1]}$expiry${checks[2]}${l2.substring(28, 35)}';
     if (!_ok(composite, checks[3])) return null;
-    return _build('TD2', l1.substring(0, 2), l1.substring(2, 5), l1.substring(5), doc, l2.substring(10, 13), birth,
-        l2[20], expiry, now);
+    return _build(
+      'TD2',
+      l1.substring(0, 2),
+      l1.substring(2, 5),
+      l1.substring(5),
+      doc,
+      l2.substring(10, 13),
+      birth,
+      l2[20],
+      expiry,
+      now,
+    );
   }
 
   static Mrz? _td1(String a, String b, String c, DateTime? now) {
@@ -86,12 +107,32 @@ class Mrz {
     if (!_ok(doc, checks[0]) || !_ok(birth, checks[1]) || !_ok(expiry, checks[2])) return null;
     final composite = '${l1.substring(5, 30)}$birth${checks[1]}$expiry${checks[2]}${l2.substring(18, 29)}';
     if (!_ok(composite, checks[3])) return null;
-    return _build('TD1', l1.substring(0, 2), l1.substring(2, 5), l3, doc, l2.substring(15, 18), birth, l2[7],
-        expiry, now);
+    return _build(
+      'TD1',
+      l1.substring(0, 2),
+      l1.substring(2, 5),
+      l3,
+      doc,
+      l2.substring(15, 18),
+      birth,
+      l2[7],
+      expiry,
+      now,
+    );
   }
 
-  static Mrz? _build(String format, String type, String issuer, String names, String doc, String nationality,
-      String birth, String sex, String expiry, DateTime? now) {
+  static Mrz? _build(
+    String format,
+    String type,
+    String issuer,
+    String names,
+    String doc,
+    String nationality,
+    String birth,
+    String sex,
+    String expiry,
+    DateTime? now,
+  ) {
     final parts = names.split('<<');
     final today = now ?? DateTime.now();
     final b = _date(birth, today, past: true), e = _date(expiry, today, past: false);

@@ -109,15 +109,7 @@ final class ArMeasureView: NSObject, FlutterPlatformView, ARSessionDelegate {
             }
         }
 
-        // ARKit refines anchors as it learns the room; read their latest poses.
-        let live = Dictionary(frame.anchors.map { ($0.identifier, $0) }, uniquingKeysWith: { a, _ in a })
-        let points = anchors.flatMap { a -> [Double] in
-            let t = (live[a.identifier] ?? a).transform.columns.3
-            return [Double(t.x), Double(t.y), Double(t.z)]
-        }
-        let vp = camera.projectionMatrix(for: .portrait, viewportSize: size, zNear: 0.05, zFar: 100)
-            * camera.viewMatrix(for: .portrait)
-        let columns = [vp.columns.0, vp.columns.1, vp.columns.2, vp.columns.3]
+        let (points, vp) = geometry(frame, size: size)
         sink([
             "tracking": tracking,
             "reason": reason,
@@ -126,8 +118,39 @@ final class ArMeasureView: NSObject, FlutterPlatformView, ARSessionDelegate {
             "normal": lastHit.map { [Double($0.columns.1.x), Double($0.columns.1.y), Double($0.columns.1.z)] } as Any,
             "kind": lastKind as Any,
             "points": points,
-            "vp": columns.flatMap { [Double($0.x), Double($0.y), Double($0.z), Double($0.w)] },
+            "vp": vp,
         ])
+    }
+
+    /// Placed points (latest poses: ARKit refines anchors as it learns the room) and the view-projection matrix
+    /// (column-major) for [frame] on a view of [size].
+    private func geometry(_ frame: ARFrame, size: CGSize) -> ([Double], [Double]) {
+        let live = Dictionary(frame.anchors.map { ($0.identifier, $0) }, uniquingKeysWith: { a, _ in a })
+        let points = anchors.flatMap { a -> [Double] in
+            let t = (live[a.identifier] ?? a).transform.columns.3
+            return [Double(t.x), Double(t.y), Double(t.z)]
+        }
+        let camera = frame.camera
+        let vp = camera.projectionMatrix(for: .portrait, viewportSize: size, zNear: 0.05, zFar: 100)
+            * camera.viewMatrix(for: .portrait)
+        let columns = [vp.columns.0, vp.columns.1, vp.columns.2, vp.columns.3]
+        return (points, columns.flatMap { [Double($0.x), Double($0.y), Double($0.z), Double($0.w)] })
+    }
+
+    /// JPEG of what the view shows (camera only: Flutter draws the shape) plus the points and matrix of the frame
+    /// it shows, so Dart's overlay lines up exactly. Main thread.
+    func snapshot() throws -> [String: Any] {
+        let size = scene.bounds.size
+        guard size.width > 0, let frame = scene.session.currentFrame,
+              let data = scene.snapshot().jpegData(compressionQuality: 0.9) else {
+            throw NSError(domain: "flutter_doc_scanner", code: 5, userInfo: [NSLocalizedDescriptionKey: "No AR frame yet"])
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("scans", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("ar_\(Int(Date().timeIntervalSince1970 * 1000)).jpg")
+        try data.write(to: url)
+        let (points, vp) = geometry(frame, size: size)
+        return ["path": url.path, "points": points, "vp": vp]
     }
 
     static func setTorch(_ on: Bool) {

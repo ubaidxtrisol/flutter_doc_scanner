@@ -29,11 +29,16 @@ void main() {
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     late Future<ScanResult?> result;
-    await tester.pumpWidget(MaterialApp(
-      home: Builder(
-        builder: (context) => TextButton(onPressed: () => result = Scanner.open(context, tab: tab), child: const Text('Host')),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => result = Scanner.open(context, tab: tab),
+            child: const Text('Host'),
+          ),
+        ),
       ),
-    ));
+    );
     await tester.tap(find.text('Host'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

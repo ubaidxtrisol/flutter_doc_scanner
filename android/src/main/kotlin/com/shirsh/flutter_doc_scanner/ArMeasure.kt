@@ -1,6 +1,7 @@
 package com.shirsh.flutter_doc_scanner
 
 import android.app.Activity
+import android.graphics.Bitmap
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -25,8 +26,10 @@ import com.google.ar.core.TrackingState
 import io.flutter.view.TextureRegistry
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.io.File
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
 
 /**
  * ARCore measuring session (Phase 5, Figma 7.6). Draws the camera into a Flutter texture on its own GL thread and
@@ -54,6 +57,7 @@ internal class ArMeasure(
     private var lastHit: HitResult? = null
     private var lockPlane: Plane? = null // the detected plane the first point was placed on
     @Volatile private var running = true
+    private var snapshot: Pair<File, (Map<String, Any?>?, String?) -> Unit>? = null // GL thread only
     private var resumed = false
 
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
@@ -134,6 +138,17 @@ internal class ArMeasure(
         lockPlane = null
     }
 
+    /**
+     * JPEG of the next drawn frame, exactly as the texture shows it (viewport aspect), written to [file]. Replies
+     * `{path, points, vp}` for that same frame, so Dart's overlay matches the photo exactly, or an error message.
+     * [done] runs on a worker thread.
+     */
+    fun snapshot(file: File, done: (Map<String, Any?>?, String?) -> Unit) = gl.post {
+        if (!running) return@post done(null, "AR stopped")
+        snapshot?.second?.invoke(null, "Superseded by a newer snapshot")
+        snapshot = file to done
+    }
+
     fun setTorch(on: Boolean) = gl.post {
         config.flashMode = if (on) Config.FlashMode.TORCH else Config.FlashMode.OFF
         runCatching { session.configure(config) }
@@ -142,6 +157,8 @@ internal class ArMeasure(
     fun stop() {
         running = false
         onGl {
+            snapshot?.second?.invoke(null, "AR stopped")
+            snapshot = null
             session.pause()
             session.close()
             detachSurface()
@@ -172,8 +189,10 @@ internal class ArMeasure(
                     Coordinates2d.TEXTURE_NORMALIZED, uv.apply { rewind() },
                 )
             }
+            var pixels: ByteBuffer? = null
             if (frame.timestamp != 0L) {
                 drawBackground()
+                if (snapshot != null) pixels = readPixels() // the back buffer, before swap hands it to Flutter
                 EGL14.eglSwapBuffers(display, surface)
             }
             val camera = frame.camera
@@ -186,6 +205,16 @@ internal class ArMeasure(
             camera.getViewMatrix(view, 0)
             camera.getProjectionMatrix(proj, 0, 0.05f, 100f)
             Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+            val points = anchors.flatMap { a -> a.pose.let { listOf(it.tx(), it.ty(), it.tz()) } }
+                .map { it.toDouble() }.toDoubleArray()
+            val vpOut = vp.map { it.toDouble() }.toDoubleArray()
+            val request = snapshot
+            if (pixels != null && request != null) {
+                snapshot = null
+                encode(pixels, request.first) { path, error ->
+                    request.second(path?.let { mapOf("path" to it, "points" to points, "vp" to vpOut) }, error)
+                }
+            }
             emit(
                 mapOf(
                     "tracking" to camera.trackingState.name.lowercase(),
@@ -198,9 +227,8 @@ internal class ArMeasure(
                         is Plane -> "plane"
                         else -> "depth"
                     },
-                    "points" to anchors.flatMap { a -> a.pose.let { listOf(it.tx(), it.ty(), it.tz()) } }
-                        .map { it.toDouble() }.toDoubleArray(),
-                    "vp" to vp.map { it.toDouble() }.toDoubleArray(),
+                    "points" to points,
+                    "vp" to vpOut,
                 ),
             )
         } catch (e: Exception) {
@@ -209,6 +237,32 @@ internal class ArMeasure(
             return
         }
         gl.post(::frame)
+    }
+
+    private fun readPixels(): ByteBuffer {
+        val buf = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+        GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+        return buf.apply { rewind() }
+    }
+
+    /** RGBA rows (bottom-up, as GL reads them) → upright JPEG in [file], off the GL thread. */
+    private fun encode(pixels: ByteBuffer, file: File, done: (String?, String?) -> Unit) = thread(name = "ar-snapshot") {
+        var raw: Bitmap? = null
+        var upright: Bitmap? = null
+        try {
+            raw = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { copyPixelsFromBuffer(pixels) }
+            val flip = android.graphics.Matrix().apply { preScale(1f, -1f) }
+            upright = Bitmap.createBitmap(raw, 0, 0, width, height, flip, false)
+            file.parentFile?.mkdirs()
+            file.outputStream().use { upright.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            done(file.path, null)
+        } catch (e: Throwable) {
+            file.delete()
+            done(null, e.message ?: e.javaClass.simpleName)
+        } finally {
+            raw?.recycle()
+            upright?.recycle()
+        }
     }
 
     private fun HitResult.onSurface() = when (val t = trackable) {

@@ -122,6 +122,13 @@ public class SwiftFlutterDocScannerPlugin: NSObject, FlutterPlugin, FlutterStrea
         case "arMove":
             ArMeasureView.current?.move(args["index"] as? Int ?? -1, to: args["at"] as? [Double] ?? [])
             result(nil)
+        case "arSnapshot":
+            guard let view = ArMeasureView.current else {
+                return result(FlutterError(code: "AR_NOT_RUNNING", message: "AR isn't running", details: nil))
+            }
+            do { result(try view.snapshot()) } catch {
+                result(FlutterError(code: "AR_SNAPSHOT", message: error.localizedDescription, details: nil))
+            }
         case "arUndo":
             ArMeasureView.current?.undo()
             result(nil)
@@ -305,7 +312,7 @@ final class CameraEngine: NSObject, FlutterTexture, AVCaptureVideoDataOutputSamp
         registry?.textureFrameAvailable(textureId)
 
         let mode = self.mode
-        guard !analyzing, ["document", "book", "idCard", "qr", "passport", "math"].contains(mode) else { return }
+        guard !analyzing, ["document", "book", "idCard", "qr", "passport"].contains(mode) else { return }
         analyzing = true
         analysisQueue.async {
             let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up)

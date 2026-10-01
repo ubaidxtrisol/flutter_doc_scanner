@@ -26,6 +26,9 @@ class ScanPage {
   /// Pages sharing a group are laid out together on export (ID card front + back on one sheet).
   String? group;
 
+  /// For result cards (math, QR, area, count): the card's document title ("Math · x = 5"), see [scanTitle].
+  String? result;
+
   /// The auto-detected page quad (null if detection failed).
   final List<Offset>? detected;
 
@@ -69,6 +72,22 @@ String defaultTitle([DateTime? at]) {
   final d = at ?? DateTime.now();
   String two(int v) => v.toString().padLeft(2, '0');
   return 'Scan ${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}.${two(d.minute)}';
+}
+
+/// Document name for [pages]: one result card keeps its own title ("Math · x = 5"), several of one kind get a plural
+/// ("Math solutions"), anything else (photos, mixed kinds) gets [defaultTitle].
+String scanTitle(List<ScanPage> pages) {
+  final titles = {for (final p in pages) p.result};
+  if (titles.isEmpty || titles.contains(null)) return defaultTitle();
+  if (titles.length == 1) return titles.single!;
+  final kinds = {for (final t in titles) t!.split(RegExp('[ :]')).first};
+  return switch (kinds.length == 1 ? kinds.single : null) {
+    'Math' => 'Math solutions',
+    'QR' => 'QR codes',
+    'Area' => 'Area measurements',
+    'Count' => 'Count results',
+    _ => defaultTitle(),
+  };
 }
 
 /// What [Scanner.open] returns when the user taps Done: the pages they kept, in order.

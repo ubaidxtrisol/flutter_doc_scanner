@@ -13,7 +13,7 @@ This package is the app's whole **scanner module**: a native camera + detection 
 | `lib/src/engine.dart` | Dart side of the native channels: `DocScanner` (camera, detections, capture, analyze, process, recognizeText), `ArMeasure`, `QuadTracker`, preview widgets |
 | `lib/src/scanner/` | Camera screen (`scanner_screen.dart`, all tabs), overlays, review (`pages_screen.dart`), crop + enhance (`editor_screen.dart`, `crop_editor.dart`), book / ID / passport result screens (`result_screens.dart`), QR / math sheets, session model, MRZ / QR / book logic, `ui.dart` design tokens + shared widgets |
 | `lib/src/count/` | Object counter: pure-Dart `counter.dart` (runs in an isolate) + `count_screen.dart` |
-| `lib/src/math/` | `solver.dart` (on-device exact solver) + `cloud.dart` (optional backend, `--dart-define=MATH_API_URL`) |
+| `lib/src/math/` | `cloud.dart` (every problem goes to the host's `Scanner.onlineMath` AI hook) + `solver.dart` (result types, OCR line picking; its exact solver is no longer called) |
 | `lib/src/measure/` | AR measure: `geometry.dart` (projection, area, plane fit, ray-plane) + `measure.dart` (controller, painter, controls) |
 | `lib/src/export/` | PDF export (`pdf` package, JPEG embedded as-is) |
 | `lib/src/scanner.dart` | `Scanner.open` facade |
@@ -25,7 +25,7 @@ This package is the app's whole **scanner module**: a native camera + detection 
 ## Architecture rules
 - **UI is 100% Flutter, and native does camera + vision only.** Only small results cross the channel (corners, strings, AR points plus one matrix per frame). Frames never reach Dart.
 - **A channel change touches four places:** Kotlin, Swift, `engine.dart`, and the contract table in `docs/SCANNER_PHASES.md`.
-- **Logic that can be pure Dart is pure Dart and unit-tested:** tracker smoothing, MRZ, QR payloads, math solver, counter, book split, AR geometry. That gives one implementation for both platforms.
+- **Logic that can be pure Dart is pure Dart and unit-tested:** tracker smoothing, MRZ, QR payloads, counter, book split, AR geometry. That gives one implementation for both platforms.
 - **Pages are non-destructive.** `ScanPage.original` is never modified. Crop, rotation and filter are data, and `DocScanner.process` re-renders.
 - **One camera session serves every scanner tab** (mode switch = analyzer swap). Measure is the exception: it swaps CameraX for AR and back (`_restart` in `scanner_screen.dart`).
 - **AR:**
@@ -59,7 +59,7 @@ Format with **`dart format -l 120`**. The code is 120 columns and uses one-line 
   - Never screenshot or view the live camera when it might show a document. Check pixel statistics numerically instead, then delete the file.
   - Only pull files the user explicitly allows. Delete copies afterwards and never commit user photos.
 - Drive the phone by **accessibility labels** (uiautomator `content-desc`), never fixed coordinates. The same screen spot is "Undo" on Measure and "Import from gallery" on other tabs; a coordinate tap once opened the photo picker. Verify which tab is active before tapping.
-- A cloud math API key must never ship in the app. The backend holds it.
+- The module never holds an AI key. Online math goes through the host's `Scanner.onlineMath` hook.
 - ML Kit sends anonymous Firebase telemetry (noted in the phases doc).
 
 ## Platform notes
@@ -72,7 +72,7 @@ Format with **`dart format -l 120`**. The code is 120 columns and uses one-line 
 
 ## Known limits and open decisions
 Kept current in `docs/SCANNER_PHASES.md`. At the time of writing:
-- Math cloud backend: not decided.
+- Math AI path: measured on rendered photos only; real textbook and handwritten samples are pending.
 - Neutral white-on-white pages: a neural segmenter is a candidate.
 - AR overlay can trail fast camera motion by one frame.
 - Counter: struggles with patterned backgrounds.

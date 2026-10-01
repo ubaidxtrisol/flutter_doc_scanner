@@ -6,9 +6,14 @@ library;
 import 'dart:math' as math;
 
 class MathStep {
-  const MathStep(this.title, this.expr);
+  const MathStep(this.title, this.expr, {this.tex});
   final String title;
+
+  /// Plain text ("2x = 15 − 5"): shown when there's no [tex], and used for copy/share.
   final String expr;
+
+  /// The same expression in LaTeX (online answers), rendered as math.
+  final String? tex;
 }
 
 class MathSolution {
@@ -18,13 +23,18 @@ class MathSolution {
     required this.answer,
     required this.steps,
     this.online = false,
+    this.answerTex,
+    this.problemTex,
   });
   final String problem;
   final String type; // "Linear equation", …
   final String answer; // "x = 5"
   final List<MathStep> steps;
 
-  /// Solved by the cloud solver rather than on device.
+  /// LaTeX for the answer and the problem as read (online answers).
+  final String? answerTex, problemTex;
+
+  /// Solved by the host's online solver ([Scanner.onlineMath]) rather than on device.
   final bool online;
 }
 
@@ -281,7 +291,9 @@ class _Poly {
     return a ?? b;
   }
 
-  _Poly operator +(_Poly o) => _Poly({for (final k in {...c.keys, ...o.c.keys}) k: at(k) + o.at(k)}, _join(v, o.v));
+  _Poly operator +(_Poly o) => _Poly({
+    for (final k in {...c.keys, ...o.c.keys}) k: at(k) + o.at(k),
+  }, _join(v, o.v));
   _Poly operator -(_Poly o) => this + o.scale(-Q.one);
   _Poly scale(Q s) => _Poly({for (final e in c.entries) e.key: e.value * s}, v);
   _Poly operator *(_Poly o) {
@@ -296,16 +308,16 @@ class _Poly {
   }
 
   static _Poly of(_N n) => switch (n) {
-        _Num(:final v) => _Poly({0: v}),
-        _Var(:final name) => _Poly({1: Q.one}, name),
-        _Neg(:final x) => of(x).scale(-Q.one),
-        _Bin(op: '+', :final l, :final r) => of(l) + of(r),
-        _Bin(op: '-', :final l, :final r) => of(l) - of(r),
-        _Bin(op: '*', :final l, :final r) => of(l) * of(r),
-        _Bin(op: '/', :final l, :final r) => _divide(of(l), of(r)),
-        _Bin(op: '^', :final l, :final r) => _power(of(l), of(r)),
-        _ => throw const _Unsupported('operator'),
-      };
+    _Num(:final v) => _Poly({0: v}),
+    _Var(:final name) => _Poly({1: Q.one}, name),
+    _Neg(:final x) => of(x).scale(-Q.one),
+    _Bin(op: '+', :final l, :final r) => of(l) + of(r),
+    _Bin(op: '-', :final l, :final r) => of(l) - of(r),
+    _Bin(op: '*', :final l, :final r) => of(l) * of(r),
+    _Bin(op: '/', :final l, :final r) => _divide(of(l), of(r)),
+    _Bin(op: '^', :final l, :final r) => _power(of(l), of(r)),
+    _ => throw const _Unsupported('operator'),
+  };
 
   static _Poly _divide(_Poly a, _Poly b) {
     if (!b.isConstant) throw const _Unsupported('variable in a denominator');
@@ -332,7 +344,16 @@ class _Poly {
       if (q.isZero) continue;
       final a = q.abs();
       final coef = k > 0 && a == Q.one ? '' : (a.isInt || k == 0 ? a.show() : '(${a.show()})');
-      final term = '$coef${k == 0 ? '' : k == 1 ? v : '$v${k == 2 ? '²' : k == 3 ? '³' : '⁴'}'}';
+      final term =
+          '$coef${k == 0
+              ? ''
+              : k == 1
+              ? v
+              : '$v${k == 2
+                    ? '²'
+                    : k == 3
+                    ? '³'
+                    : '⁴'}'}';
       parts.add(parts.isEmpty ? (q.isNegative ? '−$term' : term) : '${q.isNegative ? '−' : '+'} $term');
     }
     return parts.isEmpty ? '0' : parts.join(' ');
@@ -416,8 +437,14 @@ MathSolution _equation(_N lhs, _N rhs) {
     final what = rVar.show();
     l = l - rVar;
     r = r - rVar;
-    steps.add(MathStep(rVar.at(rVar.degree).isNegative ? 'Add ${rVar.scale(-Q.one).show()} to both sides' : 'Subtract $what from both sides',
-        eq(l, r)));
+    steps.add(
+      MathStep(
+        rVar.at(rVar.degree).isNegative
+            ? 'Add ${rVar.scale(-Q.one).show()} to both sides'
+            : 'Subtract $what from both sides',
+        eq(l, r),
+      ),
+    );
   }
   final a = l.at(1), b = l.at(0), c = r.at(0);
   if (a.isZero) {
@@ -426,18 +453,27 @@ MathSolution _equation(_N lhs, _N rhs) {
       problem: problem,
       type: 'Linear equation',
       answer: always ? 'Every $v is a solution' : 'No solution',
-      steps: [...steps, MathStep(always ? 'Both sides are always equal' : 'The sides can never be equal', '${b.show()} = ${c.show()}')],
+      steps: [
+        ...steps,
+        MathStep(always ? 'Both sides are always equal' : 'The sides can never be equal', '${b.show()} = ${c.show()}'),
+      ],
     );
   }
   final ax = _Poly({1: a}, v).show();
   if (!b.isZero) {
-    steps.add(MathStep(b.isNegative ? 'Add ${b.abs().show()} to both sides' : 'Subtract ${b.show()} from both sides',
-        '$ax = ${c.show()} ${b.isNegative ? '+' : '−'} ${b.abs().show()}'));
+    steps.add(
+      MathStep(
+        b.isNegative ? 'Add ${b.abs().show()} to both sides' : 'Subtract ${b.show()} from both sides',
+        '$ax = ${c.show()} ${b.isNegative ? '+' : '−'} ${b.abs().show()}',
+      ),
+    );
     steps.add(MathStep('Simplify', '$ax = ${(c - b).show()}'));
   }
   final x = (c - b) / a;
   if (a != Q.one) {
-    steps.add(MathStep(a == -Q.one ? 'Multiply both sides by −1' : 'Divide both sides by ${a.show()}', '$v = ${x.show()}'));
+    steps.add(
+      MathStep(a == -Q.one ? 'Multiply both sides by −1' : 'Divide both sides by ${a.show()}', '$v = ${x.show()}'),
+    );
   }
   return MathSolution(problem: problem, type: 'Linear equation', answer: '$v = ${x.show(approx: true)}', steps: steps);
 }
@@ -453,8 +489,7 @@ MathSolution _quadratic(String problem, _Poly l, _Poly r, List<MathStep> steps) 
   final a = p.at(2), b = p.at(1), c = p.at(0);
   final disc = b * b - Q.i(4) * a * c;
   String paren(Q q) => q.isNegative ? '(${q.show()})' : q.show();
-  steps.add(MathStep('Find the discriminant',
-      'Δ = ${paren(b)}² − 4·${paren(a)}·${paren(c)} = ${disc.show()}'));
+  steps.add(MathStep('Find the discriminant', 'Δ = ${paren(b)}² − 4·${paren(a)}·${paren(c)} = ${disc.show()}'));
 
   final twoA = Q.i(2) * a;
   final root = _sqrt(disc.abs());
@@ -500,14 +535,14 @@ Q? _sqrt(Q q) {
 // ─── Printing expression trees ────────────────────────────────────────────────────────────────
 
 int _prec(_N n) => switch (n) {
-      _Bin(op: '+' || '-') => 1,
-      _Bin(op: '*' || '/') => 2,
-      _Neg() => 3,
-      _Num(:final v) when v.isNegative => 3,
-      _Num(:final v) when !v.isInt => 2,
-      _Bin(op: '^') => 4,
-      _ => 5,
-    };
+  _Bin(op: '+' || '-') => 1,
+  _Bin(op: '*' || '/') => 2,
+  _Neg() => 3,
+  _Num(:final v) when v.isNegative => 3,
+  _Num(:final v) when !v.isInt => 2,
+  _Bin(op: '^') => 4,
+  _ => 5,
+};
 
 String _show(_N n) {
   String wrap(_N c, bool need) => need ? '(${_show(c)})' : _show(c);
