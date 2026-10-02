@@ -9,6 +9,7 @@ import 'package:iconsax_plus/iconsax_plus.dart';
 
 import '../math/solver.dart';
 import '../scanner.dart';
+import '../strings.dart';
 import 'card_render.dart';
 import 'result_sheets.dart';
 import 'session.dart';
@@ -76,13 +77,13 @@ class _MathSheetState extends State<_MathSheet> {
   });
 
   Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: mathPlainText(solution!)));
+    await Clipboard.setData(ClipboardData(text: mathPlainText(solution!, context.l10n)));
     HapticFeedback.lightImpact();
     if (mounted) setState(() => copied = true);
   }
 
   Future<void> _save() async {
-    final (s, save) = (solution!, widget.onSave!);
+    final (s, save, l) = (solution!, widget.onSave!, context.l10n);
     setState(() {
       saving = true;
       saveError = null;
@@ -110,15 +111,15 @@ class _MathSheetState extends State<_MathSheet> {
           pages: chunks.length,
           time: now,
         );
-        pages.add(ScanPage(await renderCard(context, card), null, label: 'Math'));
+        pages.add(ScanPage(await renderCard(context, card), null, label: l.pageLabelMath)..kind = ResultKind.math);
       }
-      await save(pages, mathTitle(s));
+      await save(pages, mathTitle(s, l));
       if (mounted) setState(() => saving = false);
     } catch (_) {
       if (mounted) {
         setState(() {
           saving = false;
-          saveError = "Couldn't save the solution. Try again.";
+          saveError = l.mathSaveFailed;
         });
       }
     } finally {
@@ -133,7 +134,7 @@ class _MathSheetState extends State<_MathSheet> {
     alignment: Alignment.topCenter,
     child: switch ((solution, error)) {
       (_, final e?) => _failed(e),
-      (final s?, _) => _solved(s),
+      (final s?, _) => _solved(s, context.l10n),
       _ => const _Solving(),
     },
   );
@@ -155,7 +156,7 @@ class _MathSheetState extends State<_MathSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("Couldn't solve this", style: TextStyles.headline.copyWith(color: _p.textPrimary)),
+                Text(context.l10n.mathFailed, style: TextStyles.headline.copyWith(color: _p.textPrimary)),
                 const SizedBox(height: 2),
                 Text('$e', style: TextStyles.subhead.copyWith(color: _p.textSecondary)),
               ],
@@ -166,12 +167,12 @@ class _MathSheetState extends State<_MathSheet> {
       // Retry can't help when there is no online solver at all.
       if (Scanner.onlineMath != null) ...[
         const SizedBox(height: 18),
-        SizedBox(width: double.infinity, child: sheetFilled(IconsaxPlusLinear.refresh, 'Retry', _retry)),
+        SizedBox(width: double.infinity, child: sheetFilled(IconsaxPlusLinear.refresh, context.l10n.retry, _retry)),
       ],
     ],
   );
 
-  Widget _solved(MathSolution s) => Column(
+  Widget _solved(MathSolution s, ScannerLocalizations l) => Column(
     key: const ValueKey('solved'),
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -182,13 +183,13 @@ class _MathSheetState extends State<_MathSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _header(s),
+              _header(s, l),
               if (s.problem.isNotEmpty || s.problemTex != null) ...[
                 const SizedBox(height: 10),
                 mathView(s.problemTex, s.problem, TextStyles.subhead.copyWith(color: _p.textSecondary)),
               ],
               const SizedBox(height: 14),
-              _answer(s, scroll: true),
+              _answer(s, l, scroll: true),
               const SizedBox(height: 12),
               for (final (i, step) in s.steps.indexed) _step(i + 1, step, scroll: true),
             ],
@@ -204,7 +205,7 @@ class _MathSheetState extends State<_MathSheet> {
       Row(
         children: [
           Pressable(
-            label: copied ? 'Copied' : 'Copy',
+            label: copied ? l.copied : l.copy,
             onTap: _copy,
             child: Container(
               width: 54,
@@ -224,7 +225,7 @@ class _MathSheetState extends State<_MathSheet> {
           const SizedBox(width: 12),
           Expanded(
             child: ScanButton(
-              saving ? 'Saving…' : 'Save to Documents',
+              saving ? l.saving : l.saveToDocuments,
               icon: IconsaxPlusLinear.document_download,
               busy: saving,
               onPressed: widget.onSave == null ? null : _save,
@@ -237,7 +238,7 @@ class _MathSheetState extends State<_MathSheet> {
   );
 }
 
-Widget _header(MathSolution s, {double size = 44}) => Row(
+Widget _header(MathSolution s, ScannerLocalizations l, {double size = 44}) => Row(
   children: [
     Container(
       width: size,
@@ -252,10 +253,7 @@ Widget _header(MathSolution s, {double size = 44}) => Row(
         children: [
           Text(s.type, style: TextStyles.headline.copyWith(color: _p.textPrimary)),
           const SizedBox(height: 2),
-          Text(
-            '${s.steps.length} step${s.steps.length == 1 ? '' : 's'}',
-            style: TextStyles.footnoteMedium.copyWith(color: _p.textSecondary),
-          ),
+          Text(l.mathSteps(s.steps.length), style: TextStyles.footnoteMedium.copyWith(color: _p.textSecondary)),
         ],
       ),
     ),
@@ -275,18 +273,18 @@ class _AiBadge extends StatelessWidget {
       children: [
         Icon(IconsaxPlusLinear.magic_star, size: 14, color: _p.brand),
         const SizedBox(width: 4),
-        Text('Solved with AI', style: TextStyles.caption1Medium.copyWith(color: _p.brand)),
+        Text(context.l10n.solvedWithAi, style: TextStyles.caption1Medium.copyWith(color: _p.brand)),
       ],
     ),
   );
 }
 
-Widget _answer(MathSolution s, {required bool scroll}) => Container(
+Widget _answer(MathSolution s, ScannerLocalizations l, {required bool scroll}) => Container(
   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
   decoration: squircleBox(16, color: _p.greenSoft),
   child: Row(
     children: [
-      Text('Answer', style: TextStyles.subheadSemibold.copyWith(color: _p.green)),
+      Text(l.mathAnswer, style: TextStyles.subheadSemibold.copyWith(color: _p.green)),
       const SizedBox(width: 16),
       Expanded(
         child: Align(
@@ -355,17 +353,17 @@ Widget mathView(String? tex, String text, TextStyle style, {bool scroll = true, 
 }
 
 /// The solution as plain text, for Copy.
-String mathPlainText(MathSolution s) => [
-  if (s.problem.isNotEmpty) 'Problem: ${s.problem}',
-  'Answer: ${s.answer}',
+String mathPlainText(MathSolution s, ScannerLocalizations l) => [
+  if (s.problem.isNotEmpty) l.mathCopyProblem(s.problem),
+  l.mathCopyAnswer(s.answer),
   '',
   for (final (i, step) in s.steps.indexed)
     step.title.isEmpty ? '${i + 1}. ${step.expr}' : '${i + 1}. ${step.title}\n   ${step.expr}',
 ].join('\n');
 
 /// "Math · x = 5": the saved document's name, about 40 characters at most.
-String mathTitle(MathSolution s) {
-  final t = 'Math · ${s.answer.replaceAll(RegExp(r'\s+'), ' ').trim()}';
+String mathTitle(MathSolution s, [ScannerLocalizations? l]) {
+  final t = (l ?? scannerEnglish).mathTitle(s.answer.replaceAll(RegExp(r'\s+'), ' ').trim());
   return t.length <= 40 ? t : '${t.substring(0, 39).trimRight()}…';
 }
 
@@ -403,6 +401,7 @@ class MathCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = cardPage.width - 80;
+    final l = context.l10n;
     final label = TextStyles.caption2Semibold.copyWith(color: _p.textTertiary, letterSpacing: .8);
     return ColoredBox(
       color: Colors.white,
@@ -420,9 +419,9 @@ class MathCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(page == 0 ? 'MATH SOLUTION' : 'MATH SOLUTION · CONTINUED', style: label),
+                      Text(page == 0 ? l.mathCardTitle : l.mathCardContinued, style: label),
                       const SizedBox(height: 10),
-                      _header(s, size: 40),
+                      _header(s, l, size: 40),
                       Divider(height: 28, color: _p.borderSubtle),
                       if (page == 0) ...[
                         if (photo case final img?) ...[
@@ -440,7 +439,7 @@ class MathCard extends StatelessWidget {
                           const SizedBox(height: 16),
                         ],
                         if (s.problem.isNotEmpty || s.problemTex != null) ...[
-                          Text('PROBLEM', style: label),
+                          Text(l.mathCardProblem, style: label),
                           const SizedBox(height: 6),
                           mathView(
                             s.problemTex,
@@ -450,10 +449,10 @@ class MathCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 16),
                         ],
-                        _answer(s, scroll: false),
+                        _answer(s, l, scroll: false),
                         const SizedBox(height: 18),
                       ],
-                      Text('STEPS', style: label),
+                      Text(l.mathCardSteps, style: label),
                       const SizedBox(height: 4),
                       for (var i = first; i < first + count; i++) _step(i + 1, s.steps[i], scroll: false),
                     ],
@@ -465,10 +464,13 @@ class MathCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: Text(cardStamp(time), style: TextStyles.caption1.copyWith(color: _p.textTertiary)),
+                  child: Text(
+                    cardStamp(time, context.dateLocale),
+                    style: TextStyles.caption1.copyWith(color: _p.textTertiary),
+                  ),
                 ),
                 if (pages > 1)
-                  Text('Page ${page + 1} of $pages', style: TextStyles.caption1.copyWith(color: _p.textTertiary)),
+                  Text(l.pageOf(page + 1, pages), style: TextStyles.caption1.copyWith(color: _p.textTertiary)),
               ],
             ),
           ],
@@ -498,7 +500,7 @@ class _SolvingState extends State<_Solving> with SingleTickerProviderStateMixin 
   @override
   Widget build(BuildContext context) => Semantics(
     liveRegion: true,
-    label: 'Solving with AI',
+    label: context.l10n.solvingWithAiLabel,
     child: AnimatedBuilder(
       animation: pulse,
       builder: (context, _) {
@@ -527,10 +529,10 @@ class _SolvingState extends State<_Solving> with SingleTickerProviderStateMixin 
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Solving with AI…', style: TextStyles.headline.copyWith(color: _p.textPrimary)),
+                      Text(context.l10n.solvingWithAi, style: TextStyles.headline.copyWith(color: _p.textPrimary)),
                       const SizedBox(height: 2),
                       Text(
-                        'Reading the problem and checking each step',
+                        context.l10n.solvingDetail,
                         style: TextStyles.footnoteMedium.copyWith(color: _p.textSecondary),
                       ),
                     ],

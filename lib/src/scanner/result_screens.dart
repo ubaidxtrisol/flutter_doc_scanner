@@ -3,18 +3,18 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iconsax_plus/iconsax_plus.dart';
+import 'package:intl/intl.dart' show DateFormat;
 import 'package:share_plus/share_plus.dart';
 
 import '../engine.dart';
 import '../export/pdf_export.dart';
+import '../strings.dart';
 import 'mrz.dart';
 import 'session.dart';
 import 'ui.dart';
 
-String formatDate(DateTime d) {
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return '${d.day.toString().padLeft(2, '0')} ${months[d.month - 1]} ${d.year}';
-}
+/// "01 Oct 2026" in [locale] (see [ScannerStrings.dateLocale]).
+String formatDate(DateTime d, String locale) => DateFormat('dd MMM yyyy', locale).format(d);
 
 /// "ANNA MARIA" → "Anna Maria" (MRZ names are upper case; Figma shows names in title case).
 String titleCase(String s) => s.split(' ').map((w) => w.isEmpty ? w : w[0] + w.substring(1).toLowerCase()).join(' ');
@@ -28,7 +28,7 @@ Future<void> _share(BuildContext context, List<ScanPage> pages, String name) asy
     final file = await exportPdf(pages, name);
     await SharePlus.instance.share(ShareParams(files: [XFile(file.path, mimeType: 'application/pdf')]));
   } catch (e) {
-    if (context.mounted) showToast(context, "Couldn't export the PDF");
+    if (context.mounted) showToast(context, context.l10n.exportFailed);
   }
 }
 
@@ -61,11 +61,8 @@ class PageImage extends StatelessWidget {
 // ---------------------------------------------------------------------------------------------------------------
 // 9.2 Book Result
 
-/// Labels of pages that came from the Book tab.
-const bookLabels = {'Left', 'Right', 'Spread'};
-
 /// Number of spreads already in [pages] (a split spread is Left + Right, an unsplit one is Spread).
-int spreadCount(Iterable<ScanPage> pages) => pages.where((p) => p.label == 'Left' || p.label == 'Spread').length;
+int spreadCount(Iterable<ScanPage> pages) => pages.where((p) => p.spreadStart).length;
 
 /// Figma 9.2: the spread just captured, "Split into two pages", running count, Next Spread / Save Book.
 /// Adds the spread's pages to [session] itself. Page-curve flattening and finger removal aren't built (no dewarp /
@@ -90,6 +87,7 @@ class BookResultScreen extends StatefulWidget {
 
 class _BookResultScreenState extends State<BookResultScreen> {
   late List<ScanPage> pages;
+  late ScannerLocalizations l;
 
   /// Book page number of this spread's left page (counted before the spread is added).
   late final int first;
@@ -97,9 +95,15 @@ class _BookResultScreenState extends State<BookResultScreen> {
 
   ScanSession get session => widget.session;
 
+  bool _added = false;
+
+  /// Adds the spread here rather than in initState, where the page labels' language can't be read yet.
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    l = context.l10n;
+    if (_added) return;
+    _added = true;
     first = spreadCount(session.pages) * 2 + 1;
     pages = _make(split: true);
     for (final p in pages) {
@@ -108,8 +112,11 @@ class _BookResultScreenState extends State<BookResultScreen> {
   }
 
   List<ScanPage> _make({required bool split}) => split
-      ? [ScanPage(widget.photo, widget.left, label: 'Left'), ScanPage(widget.photo, widget.right, label: 'Right')]
-      : [ScanPage(widget.photo, widget.spread, label: 'Spread')];
+      ? [
+          ScanPage(widget.photo, widget.left, label: l.pageLabelLeft)..spreadStart = true,
+          ScanPage(widget.photo, widget.right, label: l.pageLabelRight),
+        ]
+      : [ScanPage(widget.photo, widget.spread, label: l.pageLabelSpread)..spreadStart = true];
 
   void _toggle(bool on) {
     HapticFeedback.selectionClick();
@@ -136,8 +143,8 @@ class _BookResultScreenState extends State<BookResultScreen> {
       builder: (context, _) {
         final spreads = spreadCount(session.pages);
         return LightScreen(
-          title: 'Pages $first–${first + 1}',
-          right: NavText('Done', onTap: () => Navigator.of(context).pop(ResultAction.review)),
+          title: l.bookPagesTitle(first, first + 1),
+          right: NavText(l.done, onTap: () => Navigator.of(context).pop(ResultAction.review)),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(20, 6, 20, 16),
             children: [
@@ -168,7 +175,7 @@ class _BookResultScreenState extends State<BookResultScreen> {
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-                                _chip(c, split ? 'Page ${first + i}' : 'Pages $first–${first + 1}'),
+                                _chip(c, split ? l.bookPage(first + i) : l.bookPagesTitle(first, first + 1)),
                               ],
                             ),
                           ),
@@ -192,7 +199,7 @@ class _BookResultScreenState extends State<BookResultScreen> {
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text('Split into two pages', style: TextStyles.body.copyWith(color: c.textPrimary)),
+                      child: Text(l.splitIntoTwo, style: TextStyles.body.copyWith(color: c.textPrimary)),
                     ),
                     ScanToggle(value: split, onChanged: _toggle),
                   ],
@@ -201,7 +208,7 @@ class _BookResultScreenState extends State<BookResultScreen> {
               const SizedBox(height: 16),
               InfoBanner(
                 icon: IconsaxPlusLinear.book,
-                text: '$spreads spread${spreads == 1 ? '' : 's'} scanned · ${spreads * 2} pages',
+                text: l.spreadsScanned(spreads, spreads * 2),
                 fg: c.brand,
                 bg: c.brandSoft,
                 radius: 16,
@@ -212,7 +219,7 @@ class _BookResultScreenState extends State<BookResultScreen> {
             children: [
               Expanded(
                 child: ScanButton(
-                  'Next Spread',
+                  l.nextSpread,
                   icon: IconsaxPlusLinear.camera,
                   kind: ButtonKind.secondary,
                   onPressed: () => Navigator.of(context).pop(),
@@ -221,7 +228,7 @@ class _BookResultScreenState extends State<BookResultScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: ScanButton(
-                  'Save Book',
+                  l.saveBook,
                   icon: IconsaxPlusLinear.document_download,
                   onPressed: () => Navigator.of(context).pop(ResultAction.save),
                 ),
@@ -295,18 +302,19 @@ class _IdResultScreenState extends State<IdResultScreen> {
   @override
   Widget build(BuildContext context) {
     final c = Palette.of(context);
+    final l = context.l10n;
     return ListenableBuilder(
       listenable: widget.session,
       builder: (context, _) => LightScreen(
-        title: 'ID Card',
+        title: l.idCardTitle,
         right: NavCircle(
           icon: IconsaxPlusLinear.export,
-          label: 'Share PDF',
+          label: l.sharePdf,
           onTap: exporting
               ? null
               : () async {
                   setState(() => exporting = true);
-                  await _share(context, sides, 'ID Card');
+                  await _share(context, sides, l.idCardTitle);
                   if (mounted) setState(() => exporting = false);
                 },
         ),
@@ -329,10 +337,10 @@ class _IdResultScreenState extends State<IdResultScreen> {
             ),
             const SizedBox(height: 16),
             Segmented<_IdLayout>(
-              options: const {
-                _IdLayout.stacked: 'Stacked',
-                _IdLayout.sideBySide: 'Side by side',
-                _IdLayout.separate: 'Separate',
+              options: {
+                _IdLayout.stacked: l.layoutStacked,
+                _IdLayout.sideBySide: l.layoutSideBySide,
+                _IdLayout.separate: l.layoutSeparate,
               },
               value: layout,
               onChanged: _setLayout,
@@ -354,7 +362,7 @@ class _IdResultScreenState extends State<IdResultScreen> {
           children: [
             Expanded(
               child: ScanButton(
-                'Retake',
+                l.retake,
                 icon: IconsaxPlusLinear.camera,
                 kind: ButtonKind.secondary,
                 onPressed: () => Navigator.of(context).pop(ResultAction.retake),
@@ -363,7 +371,7 @@ class _IdResultScreenState extends State<IdResultScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: ScanButton(
-                'Save PDF',
+                l.savePdf,
                 icon: IconsaxPlusLinear.document_download,
                 onPressed: () => Navigator.of(context).pop(ResultAction.save),
               ),
@@ -427,12 +435,13 @@ class _IdResultScreenState extends State<IdResultScreen> {
   };
 
   Widget _details(Palette c, bool done, Mrz? m) {
+    final l = context.l10n;
     final rows = m == null
         ? const <(String, String)>[]
         : [
-            ('Full name', titleCase('${m.givenNames} ${m.surname}'.trim())),
-            ('ID number', m.documentNumber),
-            ('Date of birth', formatDate(m.birthDate)),
+            (l.fullName, titleCase('${m.givenNames} ${m.surname}'.trim())),
+            (l.idNumber, m.documentNumber),
+            (l.dateOfBirth, formatDate(m.birthDate, context.dateLocale)),
           ];
     return Container(
       decoration: squircleBox(18, color: c.bgCard, shadows: Shadows.xs),
@@ -447,12 +456,12 @@ class _IdResultScreenState extends State<IdResultScreen> {
                 Icon(IconsaxPlusBold.magic_star, size: 16, color: c.purple),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text('Extracted details', style: TextStyles.subheadSemibold.copyWith(color: c.textPrimary)),
+                  child: Text(l.extractedDetails, style: TextStyles.subheadSemibold.copyWith(color: c.textPrimary)),
                 ),
                 if (rows.isNotEmpty)
                   Pressable(
-                    onTap: () => _copy(rows.map((r) => '${r.$1}: ${r.$2}').join('\n'), 'Details copied'),
-                    child: Text('Copy all', style: TextStyles.footnoteMedium.copyWith(color: c.brand)),
+                    onTap: () => _copy(rows.map((r) => l.detailLine(r.$1, r.$2)).join('\n'), l.detailsCopied),
+                    child: Text(l.copyAllLower, style: TextStyles.footnoteMedium.copyWith(color: c.brand)),
                   ),
               ],
             ),
@@ -464,17 +473,14 @@ class _IdResultScreenState extends State<IdResultScreen> {
                 children: [
                   SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2, color: c.brand)),
                   const SizedBox(width: 10),
-                  Text('Reading the card…', style: TextStyles.subhead.copyWith(color: c.textSecondary)),
+                  Text(l.readingCard, style: TextStyles.subhead.copyWith(color: c.textSecondary)),
                 ],
               ),
             )
           else if (rows.isEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-              child: Text(
-                "This card has no machine-readable zone, so there's nothing verified to extract. The scan is saved as is.",
-                style: TextStyles.subhead.copyWith(color: c.textSecondary),
-              ),
+              child: Text(l.noMrzOnCard, style: TextStyles.subhead.copyWith(color: c.textSecondary)),
             )
           else
             for (final (label, value) in rows)
@@ -492,9 +498,9 @@ class _IdResultScreenState extends State<IdResultScreen> {
                       ),
                     ),
                     Pressable(
-                      label: 'Copy $label',
+                      label: l.copyField(label),
                       scale: .85,
-                      onTap: () => _copy(value, '$label copied'),
+                      onTap: () => _copy(value, l.fieldCopied(label)),
                       child: Icon(IconsaxPlusLinear.copy, size: 18, color: c.textTertiary),
                     ),
                   ],
@@ -542,44 +548,46 @@ class _PassportResultScreenState extends State<PassportResultScreen> {
     }
   }
 
-  List<(String, String)> get fields {
+  List<(String, String)> _fields(ScannerLocalizations l, String locale) {
     final m = widget.mrz;
     return [
-      (m.format == 'TD3' ? 'Passport no.' : 'Document no.', m.documentNumber),
-      ('Nationality', m.nationality),
-      ('Date of birth', formatDate(m.birthDate)),
-      ('Sex', m.sex),
-      ('Issuing country', m.issuingCountry),
-      ('Expires', formatDate(m.expiryDate)),
+      (m.format == 'TD3' ? l.passportNo : l.documentNo, m.documentNumber),
+      (l.nationality, m.nationality),
+      (l.dateOfBirth, formatDate(m.birthDate, locale)),
+      (l.sex, m.sex),
+      (l.issuingCountry, m.issuingCountry),
+      (l.expires, formatDate(m.expiryDate, locale)),
     ];
   }
 
   @override
   Widget build(BuildContext context) {
     final c = Palette.of(context);
+    final l = context.l10n;
     final m = widget.mrz;
+    final fields = _fields(l, context.dateLocale);
     final now = widget.now ?? DateTime.now();
     final expired = m.expiryDate.isBefore(now);
     final months =
         (m.expiryDate.year - now.year) * 12 + m.expiryDate.month - now.month - (m.expiryDate.day < now.day ? 1 : 0);
     final validity = expired
-        ? 'Expired on ${formatDate(m.expiryDate)}'
+        ? l.expiredOn(formatDate(m.expiryDate, context.dateLocale))
         : months >= 12
-        ? 'Valid for ${months ~/ 12} more year${months ~/ 12 == 1 ? '' : 's'}'
+        ? l.validYears(months ~/ 12)
         : months >= 1
-        ? 'Valid for $months more month${months == 1 ? '' : 's'}'
-        : 'Expires in less than a month';
+        ? l.validMonths(months)
+        : l.expiresSoon;
     final page = widget.page;
     return LightScreen(
-      title: m.format == 'TD3' ? 'Passport' : 'ID Document',
+      title: m.format == 'TD3' ? l.passportTitle : l.idDocumentTitle,
       right: NavCircle(
         icon: IconsaxPlusLinear.export,
-        label: 'Share PDF',
+        label: l.sharePdf,
         onTap: page == null || exporting
             ? null
             : () async {
                 setState(() => exporting = true);
-                await _share(context, [page], 'Passport');
+                await _share(context, [page], l.passportTitle);
                 if (mounted) setState(() => exporting = false);
               },
       ),
@@ -621,7 +629,7 @@ class _PassportResultScreenState extends State<PassportResultScreen> {
                             children: [
                               Icon(IconsaxPlusBold.verify, size: 14, color: c.green),
                               const SizedBox(width: 4),
-                              Text('MRZ verified', style: TextStyles.caption1Medium.copyWith(color: c.green)),
+                              Text(l.mrzVerified, style: TextStyles.caption1Medium.copyWith(color: c.green)),
                             ],
                           ),
                         ),
@@ -683,27 +691,27 @@ class _PassportResultScreenState extends State<PassportResultScreen> {
         children: [
           Expanded(
             child: ScanButton(
-              'Copy All',
+              l.copyAll,
               icon: IconsaxPlusLinear.copy,
               kind: ButtonKind.secondary,
               onPressed: () {
                 Clipboard.setData(
                   ClipboardData(
                     text: [
-                      'Name: ${m.givenNames} ${m.surname}'.trim(),
-                      for (final (l, v) in fields) '$l: $v',
+                      l.detailLine(l.qrName, '${m.givenNames} ${m.surname}'.trim()),
+                      for (final (label, v) in fields) l.detailLine(label, v),
                     ].join('\n'),
                   ),
                 );
                 HapticFeedback.lightImpact();
-                showToast(context, 'Details copied');
+                showToast(context, l.detailsCopied);
               },
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: ScanButton(
-              'Save PDF',
+              l.savePdf,
               icon: IconsaxPlusLinear.document_download,
               onPressed: page == null ? null : () => Navigator.of(context).pop(true),
             ),

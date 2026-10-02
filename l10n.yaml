@@ -1,0 +1,7 @@
+# Packages don't auto-generate: run `flutter gen-l10n` here after editing lib/src/l10n/scanner_en.arb and commit
+# the generated .dart files next to it.
+arb-dir: lib/src/l10n
+template-arb-file: scanner_en.arb
+output-localization-file: scanner_localizations.dart
+output-class: ScannerLocalizations
+nullable-getter: true

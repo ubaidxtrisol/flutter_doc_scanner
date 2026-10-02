@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../engine.dart';
 import '../scanner/card_render.dart';
+import '../strings.dart';
 import '../scanner/session.dart';
 import '../scanner/ui.dart';
 import 'counter.dart';
@@ -107,6 +108,7 @@ class _CountScreenState extends State<CountScreen> {
   Future<void> _save() async {
     if (saving) return;
     setState(() => saving = true);
+    final l = context.l10n;
     final base = '${widget.photo}.card.jpg';
     try {
       await DocScanner.process(path: widget.photo, outPath: base, maxSize: 1600); // upright, card-sized
@@ -124,22 +126,26 @@ class _CountScreenState extends State<CountScreen> {
         final png = await renderCard(
           context,
           PhotoCard(
-            title: 'Object count',
+            title: l.objectCount,
             photo: marked,
-            details: _details(),
-            note: 'Counted with DocScan',
+            details: _details(l),
+            note: l.countedWithDocScan,
             time: DateTime.now(),
           ),
         );
         // Closed (back gesture, Close) while rendering: don't pop the scanner underneath.
         if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return File(png).delete().ignore();
-        Navigator.of(context).pop(ScanPage(png, null, label: 'Count: $total')..filter = PageFilter.original);
+        Navigator.of(context).pop(
+          ScanPage(png, null, label: l.countPageLabel(total))
+            ..filter = PageFilter.original
+            ..kind = ResultKind.count,
+        );
       } finally {
         photo.dispose();
         marked?.dispose();
       }
     } catch (_) {
-      if (mounted) showToast(context, "Couldn't save the result. Try again.");
+      if (mounted) showToast(context, l.countSaveFailed);
     } finally {
       File(base).delete().ignore();
       if (mounted) setState(() => saving = false);
@@ -147,11 +153,11 @@ class _CountScreenState extends State<CountScreen> {
   }
 
   /// "23 objects", kind, and what was changed by hand vs the automatic count.
-  Widget _details() {
+  Widget _details(ScannerLocalizations l) {
     const p = Palette.light;
     final added = marks.where((m) => !found.contains(m)).length + extra;
     final removed = found.where((m) => !marks.contains(m)).length;
-    final edits = [if (added > 0) '$added added', if (removed > 0) '$removed removed'];
+    final edits = [if (added > 0) l.countAdded(added), if (removed > 0) l.countRemoved(removed)];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -166,20 +172,20 @@ class _CountScreenState extends State<CountScreen> {
             ),
             children: [
               TextSpan(
-                text: total == 1 ? '  object' : '  objects',
+                text: '  ${l.objectsUnit(total)}',
                 style: TextStyles.headline.copyWith(color: p.textSecondary),
               ),
             ],
           ),
         ),
         const SizedBox(height: 10),
-        CardFact('Kind', switch (kind) {
-          CountKind.round => 'Round objects',
-          CountKind.boxes => 'Boxes',
-          CountKind.custom => 'Custom',
-        }, note: kind == CountKind.custom ? 'matched to a tapped sample' : null),
-        CardFact('Automatic', '${found.length}'),
-        CardFact('By hand', edits.isEmpty ? 'No changes' : edits.join(' · ')),
+        CardFact(l.countKind, switch (kind) {
+          CountKind.round => l.roundObjects,
+          CountKind.boxes => l.boxes,
+          CountKind.custom => l.custom,
+        }, note: kind == CountKind.custom ? l.matchedToSample : null),
+        CardFact(l.countAutomatic, '${found.length}'),
+        CardFact(l.countByHand, edits.isEmpty ? l.noChanges : edits.join(' · ')),
       ],
     );
   }
@@ -200,12 +206,16 @@ class _CountScreenState extends State<CountScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Row(
                     children: [
-                      ChipButton(icon: Icons.close_rounded, label: 'Close', onTap: () => Navigator.of(context).pop()),
-                      const Expanded(
+                      ChipButton(
+                        icon: Icons.close_rounded,
+                        label: context.l10n.close,
+                        onTap: () => Navigator.of(context).pop(),
+                      ),
+                      Expanded(
                         child: Text(
-                          'Count Objects',
+                          context.l10n.titleCountObjects,
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
+                          style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600),
                         ),
                       ),
                       const SizedBox(width: 40),
@@ -257,12 +267,12 @@ class _CountScreenState extends State<CountScreen> {
               Positioned.fill(child: CustomPaint(painter: _MarksPainter(marks, radius, rect))),
               if (counting) const Center(child: CircularProgressIndicator(color: Colors.white)),
               if (kind == CountKind.custom && sample == null)
-                const Positioned(
+                Positioned(
                   left: 16,
                   right: 16,
                   bottom: 24,
                   child: Center(
-                    child: StatusPill(icon: Icons.touch_app_outlined, text: 'Tap one object to count ones like it'),
+                    child: StatusPill(icon: Icons.touch_app_outlined, text: context.l10n.tapOneObject),
                   ),
                 ),
             ],
@@ -299,7 +309,7 @@ class _CountScreenState extends State<CountScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Objects detected', style: TextStyle(color: _sub, fontSize: 14)),
+                      Text(context.l10n.objectsDetected, style: const TextStyle(color: _sub, fontSize: 14)),
                       Text(
                         '$total',
                         style: const TextStyle(color: _ink, fontSize: 44, fontWeight: FontWeight.w800, height: 1.1),
@@ -314,7 +324,7 @@ class _CountScreenState extends State<CountScreen> {
                     children: [
                       _step(
                         Icons.remove_rounded,
-                        'Remove one',
+                        context.l10n.removeOne,
                         total == 0
                             ? null
                             : () {
@@ -322,7 +332,7 @@ class _CountScreenState extends State<CountScreen> {
                               },
                       ),
                       const SizedBox(width: 6),
-                      _step(Icons.add_rounded, 'Add one', () => setState(() => extra++)),
+                      _step(Icons.add_rounded, context.l10n.addOne, () => setState(() => extra++)),
                     ],
                   ),
                 ),
@@ -333,11 +343,11 @@ class _CountScreenState extends State<CountScreen> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  _chip(CountKind.round, Icons.radio_button_checked_rounded, 'Round objects'),
+                  _chip(CountKind.round, Icons.radio_button_checked_rounded, context.l10n.roundObjects),
                   const SizedBox(width: 8),
-                  _chip(CountKind.boxes, Icons.view_in_ar_outlined, 'Boxes'),
+                  _chip(CountKind.boxes, Icons.view_in_ar_outlined, context.l10n.boxes),
                   const SizedBox(width: 8),
-                  _chip(CountKind.custom, Icons.auto_awesome_outlined, 'Custom'),
+                  _chip(CountKind.custom, Icons.auto_awesome_outlined, context.l10n.custom),
                 ],
               ),
             ),
@@ -355,7 +365,7 @@ class _CountScreenState extends State<CountScreen> {
                     ),
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.camera_alt_outlined),
-                    label: const Text('Retake'),
+                    label: Text(context.l10n.retake),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -374,7 +384,7 @@ class _CountScreenState extends State<CountScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
                         : const Icon(Icons.check_circle_outline_rounded),
-                    label: const Text('Save Result'),
+                    label: Text(context.l10n.saveResult),
                   ),
                 ),
               ],

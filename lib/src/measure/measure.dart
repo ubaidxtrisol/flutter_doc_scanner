@@ -11,6 +11,7 @@ import 'package:vector_math/vector_math_64.dart' show Vector3;
 import '../engine.dart';
 import '../scanner/card_render.dart';
 import '../scanner/session.dart';
+import '../strings.dart';
 import '../scanner/ui.dart';
 import 'geometry.dart';
 
@@ -31,7 +32,7 @@ class MeasureController extends ChangeNotifier {
   /// snapshot fails (the caller shows its message).
   Future<(ScanPage, String)?> exportCard(BuildContext context) async {
     if (!canExport || exporting) return null;
-    final viewWidth = MediaQuery.sizeOf(context).width, u = unit, now = DateTime.now();
+    final viewWidth = MediaQuery.sizeOf(context).width, u = unit, now = DateTime.now(), l = context.l10n;
     _setExporting(true);
     String? shot;
     try {
@@ -39,22 +40,22 @@ class MeasureController extends ChangeNotifier {
       shot = path;
       final pts = still.points, area = polygonArea(pts);
       if (pts.length < 3 || area < _minArea) {
-        throw PlatformException(code: 'AR_SHAPE', message: 'The shape changed. Close it again, then save.');
+        throw PlatformException(code: 'AR_SHAPE', message: l.measureShapeChanged);
       }
-      final photo = await _annotate(path, still, viewWidth, u);
+      final photo = await _annotate(path, still, viewWidth, u, l.area);
       try {
         if (!context.mounted) return null;
         final png = await renderCard(
           context,
           PhotoCard(
-            title: 'Area measurement',
+            title: l.areaMeasurement,
             photo: photo,
             details: _AreaDetails(pts, u),
-            note: 'Measured with DocScan AR · approx. ±5%',
+            note: l.measuredNote,
             time: now,
           ),
         );
-        return (ScanPage(png, null, label: 'Area'), 'Area · ${formatArea(area, u)}');
+        return (ScanPage(png, null, label: l.pageLabelArea)..kind = ResultKind.area, l.areaTitle(formatArea(area, u)));
       } finally {
         photo.dispose();
       }
@@ -71,7 +72,7 @@ class MeasureController extends ChangeNotifier {
 
   /// [path] with the shape of [still] painted on by [MeasurePainter] at the live overlay's scale ([viewWidth]
   /// logical px across), cropped vertically to a roughly square band around the shape so it fills the card.
-  Future<ui.Image> _annotate(String path, ArFrame still, double viewWidth, MeasureUnit u) async {
+  Future<ui.Image> _annotate(String path, ArFrame still, double viewWidth, MeasureUnit u, String areaLabel) async {
     final photo = await decodeForCard(path);
     try {
       final s = photo.width / viewWidth;
@@ -90,7 +91,7 @@ class MeasureController extends ChangeNotifier {
         ..translate(0, -top * s)
         ..drawImage(photo, Offset.zero, Paint())
         ..scale(s);
-      MeasurePainter(this, still: still, unit: u).paint(canvas, size);
+      MeasurePainter(this, areaLabel: areaLabel, still: still, unit: u).paint(canvas, size);
       final picture = recorder.endRecording();
       try {
         return await picture.toImage(photo.width, (height * s).round());
@@ -341,39 +342,39 @@ class MeasureController extends ChangeNotifier {
   }
 
   /// What the overlay shows, for screen readers: "Area 6.84 m². Sides 3.1 m, 2.4 m, …".
-  String? get summary {
+  String? summary(ScannerLocalizations l) {
     final pts = points;
     if (pts.isEmpty) return null;
     final n = pts.length;
     final sides = [
       for (var i = 0; i < (closed ? n : n - 1); i++) formatLength(pts[i].distanceTo(pts[(i + 1) % n]), unit),
     ];
-    final head = closed ? 'Area ${formatArea(polygonArea(pts), unit)}' : '$n point${n == 1 ? '' : 's'}';
-    return sides.isEmpty ? head : '$head. Sides ${sides.join(', ')}';
+    final head = closed ? l.summaryArea(formatArea(polygonArea(pts), unit)) : l.summaryPoints(n);
+    return sides.isEmpty ? head : l.summarySides(head, sides.join(', '));
   }
 
   /// Guidance for the status pill; null hides it.
-  (IconData, String)? get hint {
+  (IconData, String)? hint(ScannerLocalizations l) {
     final f = frame;
-    if (f == null) return (Icons.view_in_ar_rounded, 'Starting AR…');
+    if (f == null) return (Icons.view_in_ar_rounded, l.hintStartingAr);
     if (!f.isTracking) {
       return switch (f.reason) {
-        'insufficient_light' => (Icons.flashlight_on_rounded, 'Too dark · Turn on the flash'),
-        'excessive_motion' => (Icons.pan_tool_alt_outlined, 'Move your phone more slowly'),
-        'insufficient_features' => (Icons.texture_rounded, 'Point at a surface with more detail'),
-        _ => (Icons.screen_rotation_alt_rounded, 'Move your phone slowly to find a surface'),
+        'insufficient_light' => (Icons.flashlight_on_rounded, l.hintTooDark),
+        'excessive_motion' => (Icons.pan_tool_alt_outlined, l.hintMoveSlower),
+        'insufficient_features' => (Icons.texture_rounded, l.hintMoreDetail),
+        _ => (Icons.screen_rotation_alt_rounded, l.hintFindSurface),
       };
     }
     if (dragging) return null;
-    if (closed) return (Icons.open_with_rounded, 'Drag a corner to adjust');
+    if (closed) return (Icons.open_with_rounded, l.hintDragCorner);
     if (target == null) {
       return f.points.isEmpty
-          ? (Icons.center_focus_weak_rounded, 'Point the circle at a surface')
-          : (Icons.center_focus_weak_rounded, 'Aim back at the same surface');
+          ? (Icons.center_focus_weak_rounded, l.hintPointCircle)
+          : (Icons.center_focus_weak_rounded, l.hintAimBack);
     }
-    if (f.points.isEmpty) return (Icons.control_camera_rounded, 'Tap + to drop points');
-    if (f.points.length < 3) return (Icons.add_rounded, 'Tap + to add the next corner');
-    return (Icons.change_history_rounded, 'Tap the first point to close the shape');
+    if (f.points.isEmpty) return (Icons.control_camera_rounded, l.hintTapToDrop);
+    if (f.points.length < 3) return (Icons.add_rounded, l.hintNextCorner);
+    return (Icons.change_history_rounded, l.hintClose);
   }
 
   @override
@@ -396,13 +397,14 @@ class _AreaDetails extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const p = Palette.light;
+    final l = context.l10n;
     final n = points.length, area = polygonArea(points);
     final other = unit == MeasureUnit.m ? MeasureUnit.ft : MeasureUnit.m;
     final sides = [for (var i = 0; i < n; i++) points[i].distanceTo(points[(i + 1) % n])];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Area', style: TextStyles.footnoteMedium.copyWith(color: p.textSecondary)),
+        Text(l.area, style: TextStyles.footnoteMedium.copyWith(color: p.textSecondary)),
         Text.rich(
           TextSpan(
             text: formatArea(area, unit),
@@ -422,17 +424,17 @@ class _AreaDetails extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         CardFact(
-          'Perimeter',
+          l.perimeter,
           formatLength(sides.fold(0.0, (a, b) => a + b), unit),
           note: formatLength(sides.fold(0.0, (a, b) => a + b), other),
         ),
         CardFact(
-          'Sides',
+          l.sides,
           [
             for (var i = 0; i < n; i++) '${pointName(i)}–${pointName((i + 1) % n)} ${formatLength(sides[i], unit)}',
           ].join(' · '),
         ),
-        CardFact('Points', '$n'),
+        CardFact(l.points, '$n'),
       ],
     );
   }
@@ -440,8 +442,11 @@ class _AreaDetails extends StatelessWidget {
 
 /// Reticle, polygon, dashed edges, length pills and the area card, drawn over the AR camera.
 class MeasurePainter extends CustomPainter {
-  MeasurePainter(this.c, {this.still, this.unit}) : super(repaint: c);
+  MeasurePainter(this.c, {required this.areaLabel, this.still, this.unit}) : super(repaint: c);
   final MeasureController c;
+
+  /// "Area" over the value on the shape, in the app's language.
+  final String areaLabel;
 
   /// A saved frame ([ArMeasure.snapshot]): draws its closed shape with named points, no reticle or tape.
   final ArFrame? still;
@@ -572,7 +577,7 @@ class MeasurePainter extends CustomPainter {
   }
 
   void _areaCard(Canvas canvas, Offset at, String value) {
-    final label = _text('Area', const TextStyle(color: Tone.muted, fontSize: 12, fontWeight: FontWeight.w500));
+    final label = _text(areaLabel, const TextStyle(color: Tone.muted, fontSize: 12, fontWeight: FontWeight.w500));
     final big = _text(value, const TextStyle(color: Tone.chrome, fontSize: 20, fontWeight: FontWeight.w700));
     final w = math.max(label.width, big.width) + 32, h = label.height + big.height + 20;
     final r = RRect.fromRectAndRadius(Rect.fromCenter(center: at, width: w, height: h), const Radius.circular(14));
@@ -588,7 +593,8 @@ class MeasurePainter extends CustomPainter {
   )..layout();
 
   @override
-  bool shouldRepaint(MeasurePainter old) => old.c != c || old.still != still || old.unit != unit;
+  bool shouldRepaint(MeasurePainter old) =>
+      old.c != c || old.still != still || old.unit != unit || old.areaLabel != areaLabel;
 }
 
 /// Undo · + · m/ft row that replaces the gallery / shutter / pages row on the Measure tab.
@@ -646,7 +652,7 @@ class _MeasureControlsState extends State<MeasureControls> {
             duration: fast,
             curve: Curves.easeOutBack,
             child: Pressable(
-              label: busy ? 'Saving measurement' : 'Save measurement',
+              label: busy ? context.l10n.savingMeasurement : context.l10n.saveMeasurement,
               onTap: busy ? null : widget.onSave,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
@@ -666,7 +672,7 @@ class _MeasureControlsState extends State<MeasureControls> {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      busy ? 'Saving…' : 'Save measurement',
+                      busy ? context.l10n.saving : context.l10n.saveMeasurement,
                       style: TextStyles.subheadSemibold.copyWith(color: Tone.chrome),
                     ),
                   ],
@@ -688,7 +694,7 @@ class _MeasureControlsState extends State<MeasureControls> {
         children: [
           Semantics(
             button: true,
-            label: 'Undo',
+            label: context.l10n.undo,
             enabled: c.pointCount > 0,
             child: Material(
               color: Tone.surface,
@@ -705,7 +711,7 @@ class _MeasureControlsState extends State<MeasureControls> {
           ),
           Semantics(
             button: true,
-            label: c.closed ? 'New measurement' : 'Add point',
+            label: c.closed ? context.l10n.newMeasurement : context.l10n.addPoint,
             enabled: canAdd,
             child: GestureDetector(
               onTap: canAdd ? widget.onAdd : null,
@@ -728,7 +734,7 @@ class _MeasureControlsState extends State<MeasureControls> {
                   Semantics(
                     button: true,
                     selected: c.unit == u,
-                    label: u == MeasureUnit.m ? 'Meters' : 'Feet',
+                    label: u == MeasureUnit.m ? context.l10n.meters : context.l10n.feet,
                     child: GestureDetector(
                       onTap: () => c.setUnit(u),
                       child: AnimatedContainer(

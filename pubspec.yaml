@@ -10,6 +10,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any # DateFormat for card dates; version pinned by flutter_localizations
   figma_squircle: ^0.6.3 # continuous corners with the design's 60% smoothing
   iconsax_plus: ^1.0.0 # Iconsax Linear + Bold, as in the design
   image_picker: ^1.2.3
@@ -27,6 +30,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 
 flutter:
+  generate: true # enables `flutter gen-l10n` (see l10n.yaml)
   plugin:
     platforms:
       android:

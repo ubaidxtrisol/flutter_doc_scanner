@@ -9,6 +9,7 @@ import 'package:qr/qr.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../strings.dart';
 import 'card_render.dart';
 import 'qr_payload.dart';
 import 'session.dart';
@@ -21,6 +22,7 @@ const sheetTile = Color(0xFFEAF0FF); // brand/soft
 const _p = Palette.light;
 
 /// Saves a result card as a page: the scanner adds it to the scan under [title] and asks to add another or save.
+/// The page's [ScanPage.kind] says what it is.
 typedef SaveResult = Future<void> Function(ScanPage page, String title);
 
 /// Figma 7.3 result sheet: the decoded content in detail, the code re-generated from it, and Copy / Share / the
@@ -43,14 +45,14 @@ class _QrSheetState extends State<QrSheet> {
   var copied = false, passwordCopied = false, showPassword = false, saving = false;
   String? problem;
 
-  (IconData, String)? get _primary => switch (p.kind) {
+  (IconData, String)? _primary(ScannerLocalizations l) => switch (p.kind) {
     _ when p.link == null && (p.kind != QrKind.wifi || p.secret == null) => null, // Share is the action
-    QrKind.url => (IconsaxPlusLinear.export_3, 'Open Link'),
-    QrKind.email => (IconsaxPlusLinear.direct_send, 'Send Email'),
-    QrKind.phone => (IconsaxPlusLinear.call, 'Call'),
-    QrKind.sms => (IconsaxPlusLinear.message, 'Message'),
-    QrKind.geo => (IconsaxPlusLinear.map, 'Open Map'),
-    QrKind.wifi => (passwordCopied ? IconsaxPlusLinear.copy_success : IconsaxPlusLinear.key, 'Copy Password'),
+    QrKind.url => (IconsaxPlusLinear.export_3, l.openLink),
+    QrKind.email => (IconsaxPlusLinear.direct_send, l.sendEmail),
+    QrKind.phone => (IconsaxPlusLinear.call, l.call),
+    QrKind.sms => (IconsaxPlusLinear.message, l.sendMessage),
+    QrKind.geo => (IconsaxPlusLinear.map, l.openMap),
+    QrKind.wifi => (passwordCopied ? IconsaxPlusLinear.copy_success : IconsaxPlusLinear.key, l.copyPassword),
     _ => null,
   };
 
@@ -67,7 +69,7 @@ class _QrSheetState extends State<QrSheet> {
     await Clipboard.setData(ClipboardData(text: p.copyText));
     HapticFeedback.lightImpact();
     if (mounted) setState(() => copied = true);
-  }, "Couldn't copy. Try again.");
+  }, context.l10n.copyFailed);
 
   Future<void> _open() => _run(() async {
     if (p.kind == QrKind.wifi) {
@@ -83,7 +85,7 @@ class _QrSheetState extends State<QrSheet> {
       opened = await launchUrl(Uri.https('www.google.com', '/maps/search/', {'api': '1', 'query': query}));
     }
     if (!opened) throw StateError('no handler');
-  }, 'No app on this phone can open this.');
+  }, context.l10n.noAppCanOpen);
 
   /// The text, plus the generated code as a PNG when there is one.
   Future<void> _share() => _run(() async {
@@ -94,7 +96,7 @@ class _QrSheetState extends State<QrSheet> {
         files: image == null ? null : [XFile(await qrPng(image), mimeType: 'image/png')],
       ),
     );
-  }, "Couldn't open sharing. Try again.");
+  }, context.l10n.shareFailed);
 
   Future<void> _save() async {
     final save = widget.onSave!;
@@ -105,13 +107,13 @@ class _QrSheetState extends State<QrSheet> {
     try {
       final path = await renderCard(context, QrCard(p, qr: qr, time: DateTime.now()));
       if (!mounted) return; // dismissed while rendering
-      await save(ScanPage(path, null, label: p.saveTitle), p.saveTitle);
+      await save(ScanPage(path, null, label: p.saveTitle)..kind = ResultKind.qr, p.saveTitle);
       if (mounted) setState(() => saving = false);
     } catch (_) {
       if (mounted) {
         setState(() {
           saving = false;
-          problem = "Couldn't save the QR code. Try again.";
+          problem = context.l10n.qrSaveFailed;
         });
       }
     }
@@ -120,7 +122,8 @@ class _QrSheetState extends State<QrSheet> {
   @override
   Widget build(BuildContext context) {
     if (!p.readable) return _unreadable(context);
-    final primary = _primary;
+    final l = context.l10n;
+    final primary = _primary(l);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -150,23 +153,23 @@ class _QrSheetState extends State<QrSheet> {
           children: [
             sheetSquare(
               copied ? IconsaxPlusLinear.copy_success : IconsaxPlusLinear.copy,
-              copied ? 'Copied' : 'Copy',
+              copied ? l.copied : l.copy,
               _copy,
               color: copied ? _p.green : null,
             ),
             const SizedBox(width: 12),
             if (primary != null) ...[
-              sheetSquare(IconsaxPlusLinear.export_1, 'Share', _share),
+              sheetSquare(IconsaxPlusLinear.export_1, l.share, _share),
               const SizedBox(width: 12),
-              Expanded(child: sheetFilled(primary.$1, passwordCopied ? 'Password Copied' : primary.$2, _open)),
+              Expanded(child: sheetFilled(primary.$1, passwordCopied ? l.passwordCopied : primary.$2, _open)),
             ] else
-              Expanded(child: sheetFilled(IconsaxPlusLinear.export_1, 'Share', _share)),
+              Expanded(child: sheetFilled(IconsaxPlusLinear.export_1, l.share, _share)),
           ],
         ),
         if (widget.onSave != null) ...[
           const SizedBox(height: 12),
           ScanButton(
-            saving ? 'Saving…' : 'Save to Documents',
+            saving ? l.saving : l.saveToDocuments,
             icon: IconsaxPlusLinear.document_download,
             kind: ButtonKind.tonal,
             busy: saving,
@@ -215,7 +218,7 @@ class _QrSheetState extends State<QrSheet> {
     if (image == null) {
       return InfoBanner(
         icon: IconsaxPlusLinear.info_circle,
-        text: 'Too long to show as a QR code. The full content is below.',
+        text: context.l10n.qrTooLong,
         fg: _p.textSecondary,
         bg: _p.bgFill,
       );
@@ -233,7 +236,7 @@ class _QrSheetState extends State<QrSheet> {
           child: QrCodeView(image),
         ),
         const SizedBox(height: 6),
-        Text('Generated from the scanned content', style: TextStyles.caption1.copyWith(color: _p.textTertiary)),
+        Text(context.l10n.qrGenerated, style: TextStyles.caption1.copyWith(color: _p.textTertiary)),
       ],
     );
   }
@@ -250,7 +253,7 @@ class _QrSheetState extends State<QrSheet> {
         if (p.secret case final password?) ...[
           if (p.fields.isNotEmpty) Divider(height: 1, color: _p.borderSubtle),
           _row(
-            'Password',
+            context.l10n.password,
             Row(
               children: [
                 Expanded(
@@ -262,7 +265,7 @@ class _QrSheetState extends State<QrSheet> {
                         ),
                 ),
                 Pressable(
-                  label: showPassword ? 'Hide password' : 'Show password',
+                  label: showPassword ? context.l10n.hidePassword : context.l10n.showPassword,
                   onTap: () => setState(() => showPassword = !showPassword),
                   child: Padding(
                     padding: const EdgeInsets.all(4),
@@ -313,19 +316,19 @@ class _QrSheetState extends State<QrSheet> {
       ),
       const SizedBox(height: 12),
       Text(
-        p.raw.trim().isEmpty ? 'This code is empty' : "Couldn't read this code",
+        p.raw.trim().isEmpty ? context.l10n.codeEmpty : context.l10n.codeUnreadable,
         style: TextStyles.headline.copyWith(color: _p.textPrimary),
       ),
       const SizedBox(height: 4),
       Text(
-        p.raw.trim().isEmpty ? 'There is nothing in it to show.' : "It holds data that isn't text.",
+        p.raw.trim().isEmpty ? context.l10n.codeEmptyBody : context.l10n.codeNotText,
         textAlign: TextAlign.center,
         style: TextStyles.subhead.copyWith(color: _p.textSecondary),
       ),
       const SizedBox(height: 20),
       SizedBox(
         width: double.infinity,
-        child: sheetFilled(IconsaxPlusLinear.scan, 'Scan Again', () => Navigator.of(context).pop()),
+        child: sheetFilled(IconsaxPlusLinear.scan, context.l10n.scanAgain, () => Navigator.of(context).pop()),
       ),
     ],
   );
@@ -363,7 +366,7 @@ class QrCodeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'QR code',
+    label: context.l10n.qrCodeImage,
     image: true,
     child: AspectRatio(
       aspectRatio: 1,
@@ -438,10 +441,11 @@ class QrCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = payload;
+    final l = context.l10n;
     final rows = [
       ...p.fields,
       // Hidden in the sheet until tapped, but the user chose to save this code, so the card shows the password.
-      if (p.secret case final password?) ('Password', password),
+      if (p.secret case final password?) (l.password, password),
     ].take(maxRows);
     final code = qr;
     return ColoredBox(
@@ -464,7 +468,7 @@ class QrCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('QR Code · ${p.title}', style: TextStyles.title3.copyWith(color: _p.textPrimary)),
+                      Text(l.qrCardTitle(p.title), style: TextStyles.title3.copyWith(color: _p.textPrimary)),
                       Text(
                         p.display,
                         maxLines: 1,
@@ -517,7 +521,7 @@ class QrCard extends StatelessWidget {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Content', style: TextStyles.footnoteSemibold.copyWith(color: _p.textSecondary)),
+                      Text(l.qrCardContent, style: TextStyles.footnoteSemibold.copyWith(color: _p.textSecondary)),
                       const SizedBox(height: 6),
                       Container(
                         width: double.infinity,
@@ -539,7 +543,9 @@ class QrCard extends StatelessWidget {
             const SizedBox(height: 10),
             DefaultTextStyle.merge(
               style: TextStyles.caption1.copyWith(color: _p.textTertiary),
-              child: Row(children: [Text(cardStamp(time)), const Spacer(), const Text('Scanned with DocScan')]),
+              child: Row(
+                children: [Text(cardStamp(time, context.dateLocale)), const Spacer(), Text(l.scannedWithDocScan)],
+              ),
             ),
           ],
         ),
@@ -599,15 +605,21 @@ Widget sheetSquare(IconData icon, String label, VoidCallback onTap, {Color? colo
 /// What to do after a result card joins the scan.
 enum AddedAction { another, review, save }
 
-/// After a result card (math, QR, area, count) joins the scan: add another, review the pages, or save the PDF.
+/// After a result card of [kind] joins the scan under [title]: add another, review the pages, or save the PDF.
 /// Dismissing it means "add another".
-Future<AddedAction?> showAddedSheet(BuildContext context, {required String title, required int pages}) {
-  final another = switch (title.split(RegExp('[ :]')).first) {
-    'Math' => 'Solve another problem',
-    'QR' => 'Scan another code',
-    'Area' => 'Measure another area',
-    'Count' => 'Count more objects',
-    _ => 'Add another',
+Future<AddedAction?> showAddedSheet(
+  BuildContext context, {
+  required ResultKind? kind,
+  required String title,
+  required int pages,
+}) {
+  final l = context.l10n;
+  final another = switch (kind) {
+    ResultKind.math => l.anotherMath,
+    ResultKind.qr => l.anotherQr,
+    ResultKind.area => l.anotherArea,
+    ResultKind.count => l.anotherCount,
+    null => l.addAnother,
   };
   return resultSheet<AddedAction>(
     context,
@@ -628,10 +640,10 @@ Future<AddedAction?> showAddedSheet(BuildContext context, {required String title
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Added to your scan', style: TextStyles.headline.copyWith(color: _p.textPrimary)),
+                  Text(l.addedToScan, style: TextStyles.headline.copyWith(color: _p.textPrimary)),
                   const SizedBox(height: 2),
                   Text(
-                    '$title · $pages page${pages == 1 ? '' : 's'} so far',
+                    l.addedSoFar(title, pages),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyles.footnoteMedium.copyWith(color: _p.textSecondary),
@@ -649,7 +661,7 @@ Future<AddedAction?> showAddedSheet(BuildContext context, {required String title
             Expanded(
               child: sheetOutlined(
                 IconsaxPlusLinear.eye,
-                'Review',
+                l.review,
                 () => Navigator.of(context).pop(AddedAction.review),
               ),
             ),
@@ -657,7 +669,7 @@ Future<AddedAction?> showAddedSheet(BuildContext context, {required String title
             Expanded(
               child: sheetOutlined(
                 IconsaxPlusLinear.document_download,
-                'Save PDF',
+                l.savePdf,
                 () => Navigator.of(context).pop(AddedAction.save),
               ),
             ),

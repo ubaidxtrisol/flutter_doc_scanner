@@ -3,8 +3,10 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:path_provider/path_provider.dart';
 
+import '../strings.dart';
 import 'ui.dart';
 
 /// A4 portrait in logical points: result cards (math, QR, measure, count) are laid out on it, so the exported
@@ -13,7 +15,7 @@ const cardPage = Size(595, 842);
 
 /// Renders [card] offscreen at [size] × [pixelRatio] to a PNG in the cache and returns its path.
 ///
-/// The card inherits [context]'s theme, text style (the host's Inter) and directionality. Everything in it must
+/// The card inherits [context]'s theme, text style (the host's Inter), localizations and directionality. Everything in it must
 /// paint synchronously: pass photos as decoded `ui.Image`s through [RawImage], not `Image.file`.
 Future<String> renderCard(BuildContext context, Widget card, {Size size = cardPage, double pixelRatio = 2.5}) async {
   final view = View.of(context);
@@ -40,9 +42,12 @@ Future<String> renderCard(BuildContext context, Widget card, {Size size = cardPa
           textDirection: Directionality.maybeOf(context) ?? TextDirection.ltr,
           // The theme's body style (the host's Inter). Not DefaultTextStyle.of(context): callers' contexts often
           // sit above their Scaffold, where it's the red, yellow-underlined "no Material" error style.
-          child: Material(
-            type: MaterialType.transparency,
-            child: SizedBox.fromSize(size: size, child: card),
+          child: Localizations.override(
+            context: context,
+            child: Material(
+              type: MaterialType.transparency,
+              child: SizedBox.fromSize(size: size, child: card),
+            ),
           ),
         ),
       ),
@@ -80,12 +85,9 @@ Future<ui.Image> decodeForCard(String path, {int maxWidth = 1600}) async {
   }
 }
 
-/// "Oct 1, 2026 · 14:05" for card footers.
-String cardStamp(DateTime t) {
-  const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  String two(int n) => n.toString().padLeft(2, '0');
-  return '${m[t.month - 1]} ${t.day}, ${t.year} · ${two(t.hour)}:${two(t.minute)}';
-}
+/// "Oct 1, 2026 · 14:05" for card footers, in [locale] (see [ScannerStrings.dateLocale]).
+String cardStamp(DateTime t, String locale) =>
+    '${DateFormat.yMMMd(locale).format(t)} · ${DateFormat.Hm(locale).format(t)}';
 
 /// A4 result card with a photo (count, measure): [title], the photo as large as fits, [details] below it, then a
 /// footer with the date and [note]. Always light: it's a printed page, not app chrome.
@@ -134,7 +136,7 @@ class PhotoCard extends StatelessWidget {
             const SizedBox(height: 10),
             Row(
               children: [
-                Text(cardStamp(time), style: small),
+                Text(cardStamp(time, context.dateLocale), style: small),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Text(note, textAlign: TextAlign.end, style: small),

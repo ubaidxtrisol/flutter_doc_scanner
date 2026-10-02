@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iconsax_plus/iconsax_plus.dart';
 
+import '../strings.dart';
 import 'editor_screen.dart';
 import 'session.dart';
 import 'ui.dart';
@@ -53,7 +54,7 @@ class _PagesScreenState extends State<PagesScreen> {
     });
     showToast(
       context,
-      removed.length == 1 ? 'Page ${removed.single.$1 + 1} deleted' : '${removed.length} pages deleted',
+      removed.length == 1 ? context.l10n.pageDeleted(removed.single.$1 + 1) : context.l10n.pagesDeleted(removed.length),
       undo: () {
         for (final (i, p) in removed) {
           session.insert(i, p);
@@ -86,8 +87,8 @@ class _PagesScreenState extends State<PagesScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                row(IconsaxPlusLinear.camera, 'Camera', false),
-                if (widget.onAddFromPhotos != null) row(IconsaxPlusLinear.gallery, 'Photos', true),
+                row(IconsaxPlusLinear.camera, context.l10n.addFromCamera, false),
+                if (widget.onAddFromPhotos != null) row(IconsaxPlusLinear.gallery, context.l10n.addFromPhotos, true),
               ],
             ),
           ),
@@ -102,6 +103,7 @@ class _PagesScreenState extends State<PagesScreen> {
   @override
   Widget build(BuildContext context) {
     final c = Palette.of(context);
+    final l = context.l10n;
     return ListenableBuilder(
       listenable: session,
       builder: (context, _) {
@@ -113,9 +115,9 @@ class _PagesScreenState extends State<PagesScreen> {
         }
         selected.removeWhere((p) => !session.pages.contains(p));
         return LightScreen(
-          title: selecting ? '${selected.length} Selected' : '$n Page${n == 1 ? '' : 's'}',
+          title: selecting ? l.selectedCount(selected.length) : l.pagesTitle(n),
           right: NavText(
-            selecting ? 'Cancel' : 'Select',
+            selecting ? l.cancel : l.select,
             onTap: () {
               setState(() {
                 selecting = !selecting;
@@ -131,7 +133,7 @@ class _PagesScreenState extends State<PagesScreen> {
                 children: [
                   InfoBanner(
                     icon: IconsaxPlusLinear.info_circle,
-                    text: selecting ? 'Tap pages to select them' : 'Long-press and drag to reorder pages',
+                    text: selecting ? l.tapToSelect : l.dragToReorder,
                     fg: c.brand,
                     bg: c.brandSoft,
                   ),
@@ -156,13 +158,13 @@ class _PagesScreenState extends State<PagesScreen> {
                     children: [
                       SquareButton(
                         icon: IconsaxPlusLinear.rotate_right_1,
-                        label: 'Rotate selected',
+                        label: l.rotateSelected,
                         onTap: selected.isEmpty ? null : () => _rotate(selected),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: ScanButton(
-                          selected.isEmpty ? 'Delete' : 'Delete ${selected.length}',
+                          selected.isEmpty ? l.delete : l.deleteCount(selected.length),
                           icon: IconsaxPlusLinear.trash,
                           kind: ButtonKind.danger,
                           onPressed: selected.isEmpty ? null : () => _delete([...selected]),
@@ -175,7 +177,7 @@ class _PagesScreenState extends State<PagesScreen> {
                     children: [
                       SquareButton(
                         icon: IconsaxPlusLinear.edit_2,
-                        label: 'Edit pages',
+                        label: l.editPages,
                         onTap: () => Navigator.of(
                           context,
                         ).push(MaterialPageRoute(builder: (_) => EnhanceScreen(session: session, initialIndex: 0))),
@@ -183,11 +185,11 @@ class _PagesScreenState extends State<PagesScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: ScanButton(
-                          'Save as PDF',
+                          l.saveAsPdf,
                           icon: IconsaxPlusLinear.document_download,
                           onPressed: () => Navigator.of(
                             context,
-                          ).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages))),
+                          ).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages, l))),
                         ),
                       ),
                     ],
@@ -309,9 +311,14 @@ class _PagesScreenState extends State<PagesScreen> {
                   ),
                 ),
                 if (!selecting) ...[
-                  _icon(IconsaxPlusLinear.rotate_right_1, 'Rotate page ${i + 1}', c.textPrimary, () => _rotate([page])),
+                  _icon(
+                    IconsaxPlusLinear.rotate_right_1,
+                    context.l10n.rotatePage(i + 1),
+                    c.textPrimary,
+                    () => _rotate([page]),
+                  ),
                   const SizedBox(width: 10),
-                  _icon(IconsaxPlusLinear.trash, 'Delete page ${i + 1}', c.red, () => _delete([page])),
+                  _icon(IconsaxPlusLinear.trash, context.l10n.deletePage(i + 1), c.red, () => _delete([page])),
                 ],
               ],
             ),
@@ -329,7 +336,7 @@ class _PagesScreenState extends State<PagesScreen> {
   );
 
   Widget _addCard(Palette c, double w) => Pressable(
-    label: 'Add page',
+    label: context.l10n.addPage,
     onTap: _addPage,
     child: SizedBox(
       width: w,
@@ -346,9 +353,9 @@ class _PagesScreenState extends State<PagesScreen> {
               child: const Icon(IconsaxPlusLinear.add, size: 26, color: Colors.white),
             ),
             const SizedBox(height: 10),
-            Text('Add page', style: TextStyles.subheadSemibold.copyWith(color: c.brand)),
+            Text(context.l10n.addPage, style: TextStyles.subheadSemibold.copyWith(color: c.brand)),
             const SizedBox(height: 10),
-            Text('Camera or Photos', style: TextStyles.caption1.copyWith(color: c.textSecondary)),
+            Text(context.l10n.cameraOrPhotos, style: TextStyles.caption1.copyWith(color: c.textSecondary)),
           ],
         ),
       ),

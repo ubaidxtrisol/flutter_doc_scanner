@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iconsax_plus/iconsax_plus.dart';
 
+import '../strings.dart';
+
 /// Camera-screen colours (always dark), exact values from the DocScan Figma.
 abstract final class Tone {
   static const chrome = Color(0xFF0B0D12);
@@ -508,7 +510,7 @@ class LightScreen extends StatelessWidget {
                           alignment: Alignment.centerLeft,
                           child: NavCircle(
                             icon: Icons2.back,
-                            label: 'Back',
+                            label: context.l10n.back,
                             onTap: onBack ?? () => Navigator.of(context).maybePop(),
                           ),
                         ),
@@ -703,7 +705,7 @@ void showToast(BuildContext context, String text, {VoidCallback? undo}) {
         behavior: SnackBarBehavior.floating,
         backgroundColor: const Color(0xE60E1116),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        action: undo == null ? null : SnackBarAction(label: 'Undo', textColor: Tone.accent, onPressed: undo),
+        action: undo == null ? null : SnackBarAction(label: context.l10n.undo, textColor: Tone.accent, onPressed: undo),
       ),
     );
 }

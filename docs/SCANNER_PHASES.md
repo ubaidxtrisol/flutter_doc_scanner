@@ -256,7 +256,7 @@ nothing is sent anywhere. iOS parity is written, untested (deferred).
 
 ### Result cards join the scan (2026-10-01, user request)
 Math, QR, Area and Count cards no longer end the scan. `_savePages` (`scanner_screen.dart`) adds the card's pages to
-the session (Original filter, `ScanPage.result` = its title), then `showAddedSheet` (`result_sheets.dart`) asks:
+the session (Original filter, `ScanPage.result` = its title, `ScanPage.kind` = what it is), then `showAddedSheet` (`result_sheets.dart`) asks:
 **Solve another problem / Scan another code / Measure another area / Count more objects** (default, and what
 dismissing means: stay on the camera), **Review** (the pages screen), or **Save PDF** (finish). "Scan another code"
 doesn't reopen the code just saved while it's in view; "Measure another area" clears the AR shape. No QR / MRZ sheet
@@ -509,6 +509,24 @@ The app's scanner grew to eight modes. To keep a big host app clean, the whole f
   - 53 unit and widget tests in `test/`, including `scanner_api_test.dart` for the host contract (Done returns pages, Close returns null, `tab` picks the mode). (62 after Phase 6b.)
   - 12 on-device tests in `example/integration_test/`, all passing on the Pixel 6.
   - The host app and the example both build.
+
+### Localization (2026-10-02)
+- Every user-visible string in `lib/` is a key in `lib/src/l10n/scanner_en.arb` (English only so far). `l10n.yaml`
+  generates `ScannerLocalizations` next to it. Packages don't auto-generate, so run `flutter gen-l10n` in this folder
+  after editing the ARB and commit the generated `.dart` files. A new language = `scanner_<code>.arb` + regenerate.
+- Widgets read `context.l10n` (`lib/src/strings.dart`): `ScannerLocalizations.of(context)`, or English when the host
+  hasn't registered `ScannerLocalizations.delegate` or has no scanner translation for its language (the example app
+  and the widget tests rely on this). Code without a context takes a `ScannerLocalizations` argument (`scanTitle`,
+  `solveInCloud`, `QrPayload.parse`, `MeasureController.hint` / `summary`).
+- Card dates use `intl` `DateFormat` in the app's locale (English if its date symbols aren't loaded).
+  `renderCard` wraps the offscreen tree in `Localizations.override`, so saved cards use the app's language.
+- **Logic never reads display strings.** Result cards carry `ScanPage.kind` (`ResultKind.math / qr / area / count`);
+  `ScanResult.kind` is set when every page is a card of one kind, and `ScanResult.severalResults` says there is more
+  than one. `scanTitle`, the "added to your scan" sheet and the host's Scan Complete screen switch on the kind instead
+  of parsing the title's first word. Book spreads count `ScanPage.spreadStart` instead of the "Left" / "Spread" labels.
+  Page labels and titles are stored in the language they were captured in.
+- Left in English on purpose: `filterNames` (kept for compatibility; UI uses `filterName(context, f)`), the retired on-device math solver's step
+  titles, unit symbols (m, cm, ft, in, m²), and messages that come from native code (`PlatformException.message`).
 
 ---
 

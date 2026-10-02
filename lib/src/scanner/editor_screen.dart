@@ -6,10 +6,12 @@ import 'package:iconsax_plus/iconsax_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../engine.dart';
+import '../strings.dart';
 import 'crop_editor.dart';
 import 'session.dart';
 import 'ui.dart';
 
+/// English filter names. Show [filterName] in UI instead (it follows the app's language).
 const filterNames = {
   PageFilter.original: 'Original',
   PageFilter.magic: 'Magic',
@@ -18,6 +20,19 @@ const filterNames = {
   PageFilter.noShadow: 'No Shadow',
   PageFilter.color: 'Color',
 };
+
+/// [f]'s name in the app's language, e.g. "Magic".
+String filterName(BuildContext context, PageFilter f) {
+  final l = context.l10n;
+  return switch (f) {
+    PageFilter.original => l.filterOriginal,
+    PageFilter.magic => l.filterMagic,
+    PageFilter.bw => l.filterBw,
+    PageFilter.gray => l.filterGray,
+    PageFilter.noShadow => l.filterNoShadow,
+    PageFilter.color => l.filterColor,
+  };
+}
 
 /// Figma 3.3 Adjust Crop: drag corners / edges (loupe), rotate, Auto / Perspective preview / Full page, Retake.
 /// Next saves the crop and continues to [EnhanceScreen] for the same page.
@@ -86,6 +101,7 @@ class _CropScreenState extends State<CropScreen> {
     final c = Palette.of(context);
     final auto = page.detected != null && _same(page.detected, draft);
     final full = _same(fullPage, draft);
+    final l = context.l10n;
     Widget tool(IconData icon, String label, VoidCallback? onTap, {bool on = false}) => SizedBox(
       width: 72,
       child: Column(
@@ -109,9 +125,9 @@ class _CropScreenState extends State<CropScreen> {
       ),
     );
     return LightScreen(
-      title: 'Adjust Crop',
+      title: l.adjustCrop,
       right: NavText(
-        'Reset',
+        l.reset,
         onTap: () {
           setState(() => rotation = 0);
           _set(page.detected ?? fullPage);
@@ -172,7 +188,7 @@ class _CropScreenState extends State<CropScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  tool(IconsaxPlusLinear.rotate_left_1, 'Rotate', () {
+                  tool(IconsaxPlusLinear.rotate_left_1, l.rotate, () {
                     HapticFeedback.selectionClick();
                     setState(() {
                       rotation = (rotation + 270) % 360;
@@ -181,17 +197,17 @@ class _CropScreenState extends State<CropScreen> {
                   }),
                   tool(
                     IconsaxPlusLinear.magicpen,
-                    'Auto',
+                    l.cropAuto,
                     page.detected == null ? null : () => _set(page.detected!),
                     on: auto,
                   ),
                   tool(
                     IconsaxPlusLinear.maximize_4,
-                    'Perspective',
+                    l.cropPerspective,
                     straightening ? null : _perspective,
                     on: straight != null,
                   ),
-                  tool(IconsaxPlusLinear.crop, 'Full page', () => _set(fullPage), on: full),
+                  tool(IconsaxPlusLinear.crop, l.cropFullPage, () => _set(fullPage), on: full),
                 ],
               ),
             ),
@@ -201,10 +217,10 @@ class _CropScreenState extends State<CropScreen> {
       actions: Row(
         children: [
           Expanded(
-            child: ScanButton('Retake', icon: IconsaxPlusLinear.camera, kind: ButtonKind.secondary, onPressed: _retake),
+            child: ScanButton(l.retake, icon: IconsaxPlusLinear.camera, kind: ButtonKind.secondary, onPressed: _retake),
           ),
           const SizedBox(width: 12),
-          Expanded(child: ScanButton('Next', onPressed: _next)),
+          Expanded(child: ScanButton(l.next, onPressed: _next)),
         ],
       ),
     );
@@ -336,7 +352,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
         ..contrast = page.contrast;
       session.update(p);
     }
-    showToast(context, '${filterNames[page.filter]} applied to all ${session.pages.length} pages');
+    showToast(context, context.l10n.filterAppliedToAll(filterName(context, page.filter), session.pages.length));
   }
 
   /// Maps the rendered preview (b0, c0) to the live slider values (b1, c1), same curve as the native filter.
@@ -349,16 +365,17 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
   @override
   Widget build(BuildContext context) {
     final c = Palette.of(context);
+    final l = context.l10n;
     return ListenableBuilder(
       listenable: session,
       builder: (context, _) {
         if (session.pages.isEmpty) return Scaffold(backgroundColor: c.bgBase);
         index = index.clamp(0, session.pages.length - 1);
         return LightScreen(
-          title: 'Enhance',
+          title: l.enhance,
           right: NavCircle(
             icon: IconsaxPlusLinear.rotate_right_1,
-            label: 'Rotate',
+            label: l.rotate,
             onTap: () {
               HapticFeedback.selectionClick();
               page.rotation = (page.rotation + 90) % 360;
@@ -391,7 +408,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                               left: 0,
                               right: 0,
                               bottom: 10,
-                              child: Center(child: ImageChip('Page ${index + 1} of ${session.pages.length}')),
+                              child: Center(child: ImageChip(l.pageOf(index + 1, session.pages.length))),
                             ),
                           ],
                         ),
@@ -406,12 +423,12 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Column(
                     children: [
-                      _slider(c, IconsaxPlusLinear.sun_1, 'Brightness', brightness, (v) => brightness = v, (v) {
+                      _slider(c, IconsaxPlusLinear.sun_1, l.brightness, brightness, (v) => brightness = v, (v) {
                         page.brightness = v;
                         _render();
                       }),
                       const SizedBox(height: 14),
-                      _slider(c, IconsaxPlusLinear.colorfilter, 'Contrast', contrast, (v) => contrast = v, (v) {
+                      _slider(c, IconsaxPlusLinear.colorfilter, l.contrast, contrast, (v) => contrast = v, (v) {
                         page.contrast = v;
                         _render();
                       }),
@@ -425,13 +442,13 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
             children: [
               Expanded(
                 child: ScanButton(
-                  'Apply to all',
+                  l.applyToAll,
                   kind: ButtonKind.tonal,
                   onPressed: session.pages.length > 1 ? _applyToAll : null,
                 ),
               ),
               const SizedBox(width: 12),
-              Expanded(child: ScanButton('Next', onPressed: () => Navigator.of(context).pop())),
+              Expanded(child: ScanButton(l.next, onPressed: () => Navigator.of(context).pop())),
             ],
           ),
         );
@@ -476,7 +493,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
         return Semantics(
           button: true,
           selected: on,
-          label: filterNames[f],
+          label: filterName(context, f),
           child: GestureDetector(
             onTap: () {
               if (on) return;
@@ -525,7 +542,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
                   style: on
                       ? TextStyles.caption1Medium.copyWith(color: c.brand)
                       : TextStyles.caption1.copyWith(color: c.textSecondary),
-                  child: Text(filterNames[f]!),
+                  child: Text(filterName(context, f)),
                 ),
               ],
             ),
@@ -564,7 +581,7 @@ class _EnhanceScreenState extends State<EnhanceScreen> {
               value: value,
               min: -1,
               max: 1,
-              semanticFormatterCallback: (v) => '$label ${((v + 1) * 50).round()}',
+              semanticFormatterCallback: (v) => context.l10n.sliderValue(label, ((v + 1) * 50).round()),
               onChanged: (v) => setState(() => changed(v)),
               onChangeEnd: done,
             ),

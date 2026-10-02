@@ -31,7 +31,8 @@ import 'package:flutter_doc_scanner/flutter_doc_scanner.dart';
 
 final result = await Scanner.open(context);                        // or tab: ScannerTab.qr, .measure, …
 if (result != null) {
-  result.title;                // name typed on the review screen
+  result.title;                // document name, in the scanner's language (display only)
+  result.kind;                 // ResultKind when every page is a math / QR / area / count card, else null
   result.pages;                // ScanPage: original photo, crop, filter, label, `preview` render
   result.pdf;                  // set if the user exported a PDF and didn't edit afterwards
   final pdf = await result.toPdf('Invoice');                       // full-quality PDF
@@ -56,6 +57,11 @@ if (result != null) {
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Import photos of documents to scan.</string>
     ```
+- **Languages:** add `ScannerLocalizations.delegate` to your app's `localizationsDelegates` (with
+  `GlobalMaterialLocalizations.delegate` etc., which also load the date formats for saved cards). Without it, or for
+  a language the scanner has no strings for yet, the scanner shows English. `ScanResult.title` and page labels are
+  display text in that language: use `ScanResult.kind` (`ResultKind.math / qr / area / count`, null for photos or
+  mixed pages) and `ScanResult.severalResults` for logic.
 - **Math solver (required for Math):** set `Scanner.onlineMath` before opening the scanner. It gets an empty text and a JPEG of the photo (≤ 1280 px)
   (the module runs no OCR for math; read the problem from the photo), and returns a `MathSolution` (steps with LaTeX in
   `MathStep.tex`). Throw an exception whose `toString()` is user-facing. The module holds no keys; the host calls its

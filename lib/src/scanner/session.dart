@@ -6,9 +6,14 @@ import 'package:flutter/painting.dart';
 import '../engine.dart';
 import '../export/pdf_export.dart';
 import '../scanner.dart';
+import '../strings.dart';
 
 /// Long side of on-screen page renders. Exports render at full quality separately.
 const previewSize = 1600;
+
+/// What a result card page holds (the scanner's QR, Math, Measure and Count modes). Stable across languages, unlike
+/// titles and labels.
+enum ResultKind { math, qr, area, count }
 
 /// One scanned page. Non-destructive: [original] is never modified; [preview] is
 /// re-rendered from `{corners, rotation, filter}` whenever they change.
@@ -20,14 +25,20 @@ class ScanPage {
 
   final String original;
 
-  /// Shown under the thumbnail ("ID front", "Left", …).
+  /// Shown under the thumbnail ("ID front", "Left", …), in the language the page was captured in.
   String? label;
+
+  /// The first page of a book spread (its left half, or the whole unsplit spread).
+  bool spreadStart = false;
 
   /// Pages sharing a group are laid out together on export (ID card front + back on one sheet).
   String? group;
 
-  /// For result cards (math, QR, area, count): the card's document title ("Math · x = 5"), see [scanTitle].
+  /// For result cards: the card's document title ("Math · x = 5"), see [scanTitle].
   String? result;
+
+  /// For result cards: what the card holds. Null for camera and gallery pages.
+  ResultKind? kind;
 
   /// The auto-detected page quad (null if detection failed).
   final List<Offset>? detected;
@@ -68,25 +79,24 @@ class ScanPage {
 }
 
 /// Default document name: "Scan 2026-09-30 14.05".
-String defaultTitle([DateTime? at]) {
+String defaultTitle(ScannerLocalizations l, [DateTime? at]) {
   final d = at ?? DateTime.now();
   String two(int v) => v.toString().padLeft(2, '0');
-  return 'Scan ${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}.${two(d.minute)}';
+  return l.defaultTitle('${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}.${two(d.minute)}');
 }
 
 /// Document name for [pages]: one result card keeps its own title ("Math · x = 5"), several of one kind get a plural
 /// ("Math solutions"), anything else (photos, mixed kinds) gets [defaultTitle].
-String scanTitle(List<ScanPage> pages) {
+String scanTitle(List<ScanPage> pages, ScannerLocalizations l) {
   final titles = {for (final p in pages) p.result};
-  if (titles.isEmpty || titles.contains(null)) return defaultTitle();
+  if (titles.isEmpty || titles.contains(null)) return defaultTitle(l);
   if (titles.length == 1) return titles.single!;
-  final kinds = {for (final t in titles) t!.split(RegExp('[ :]')).first};
-  return switch (kinds.length == 1 ? kinds.single : null) {
-    'Math' => 'Math solutions',
-    'QR' => 'QR codes',
-    'Area' => 'Area measurements',
-    'Count' => 'Count results',
-    _ => defaultTitle(),
+  return switch (ScanResult(pages).kind) {
+    ResultKind.math => l.titleMathSolutions,
+    ResultKind.qr => l.titleQrCodes,
+    ResultKind.area => l.titleAreaMeasurements,
+    ResultKind.count => l.titleCountResults,
+    null => defaultTitle(l),
   };
 }
 
@@ -98,11 +108,20 @@ class ScanResult {
   const ScanResult(this.pages, {this.title = 'Scan', this.pdf});
   final List<ScanPage> pages;
 
-  /// Document name the user typed on the review screen.
+  /// Document name (see [scanTitle]), in the scanner's language. Display only: use [kind] for logic.
   final String title;
 
   /// The PDF, if the user exported one and didn't edit the pages afterwards.
   final File? pdf;
+
+  /// The kind of result card every page is, or null when any page is a photo or the kinds are mixed.
+  ResultKind? get kind {
+    final kinds = {for (final p in pages) p.kind};
+    return kinds.length == 1 ? kinds.single : null;
+  }
+
+  /// More than one result (e.g. two math solutions; one solution's pages count once).
+  bool get severalResults => {for (final p in pages) p.result}.length > 1;
 
   /// Full-quality PDF of [pages] (ID card front + back share one A4 sheet), written to the cache.
   Future<File> toPdf(String name) => exportPdf(pages, name);

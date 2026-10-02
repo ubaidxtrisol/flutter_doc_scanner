@@ -12,6 +12,7 @@ import '../count/count_screen.dart';
 import '../math/cloud.dart';
 import '../measure/measure.dart';
 import '../scanner.dart';
+import '../strings.dart';
 import 'book.dart';
 import 'mrz.dart';
 import 'overlays.dart';
@@ -25,19 +26,39 @@ import 'ui.dart';
 
 /// The scanner's modes, in tab-bar order. Pass one to [Scanner.open] to start there.
 enum ScannerTab {
-  document('Document', 'Document', ScanMode.document),
-  idCard('ID Card', 'ID Card', ScanMode.idCard),
-  passport('Passport', 'Passport', ScanMode.passport),
-  book('Book', 'Book', ScanMode.book),
-  qr('QR', 'Scan QR', ScanMode.qr),
-  math('Math', 'Math', ScanMode.math),
-  count('Count', 'Count Objects', ScanMode.count),
-  measure('Measure', 'Measure', null);
+  document(ScanMode.document),
+  idCard(ScanMode.idCard),
+  passport(ScanMode.passport),
+  book(ScanMode.book),
+  qr(ScanMode.qr),
+  math(ScanMode.math),
+  count(ScanMode.count),
+  measure(null);
 
-  const ScannerTab(this.label, this.title, this.mode);
-  final String label;
-  final String title;
+  const ScannerTab(this.mode);
   final ScanMode? mode;
+
+  /// Name in the tab bar, in the app's language.
+  String label(BuildContext context) {
+    final l = context.l10n;
+    return switch (this) {
+      document => l.tabDocument,
+      idCard => l.tabIdCard,
+      passport => l.tabPassport,
+      book => l.tabBook,
+      qr => l.tabQr,
+      math => l.tabMath,
+      count => l.tabCount,
+      measure => l.tabMeasure,
+    };
+  }
+
+  /// Title on the camera's top bar.
+  String title(BuildContext context) => switch (this) {
+    qr => context.l10n.titleScanQr,
+    count => context.l10n.titleCountObjects,
+    _ => label(context),
+  };
 
   /// Tabs that track a page / card / spread quad.
   bool get quad => this == document || this == book || this == idCard;
@@ -198,10 +219,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   /// Math has no live detection: the shutter (or a gallery photo) goes straight to the AI ([Scanner.onlineMath]),
   /// which reads the problem from the photo. The sheet shows the loader, the answer, Retry and Save.
   Future<void> _solvePhoto(String photo) async {
-    if (Scanner.onlineMath == null) return _toast("Solving math needs AI, which isn't set up in this app.");
+    final l = context.l10n;
+    if (Scanner.onlineMath == null) return _toast(l.mathNeedsAi);
     setState(() => sheetOpen = true);
     HapticFeedback.mediumImpact();
-    await showMathSheet(context, () => solveInCloud(photo), photo: photo, onSave: _savePages);
+    await showMathSheet(context, () => solveInCloud(photo, l), photo: photo, onSave: _savePages);
     if (mounted) setState(() => sheetOpen = false);
   }
 
@@ -252,7 +274,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   Future<void> _presentMrz(Mrz mrz, String? photo, List<Offset>? corners) async {
     final page = photo == null
         ? null
-        : ScanPage(photo, corners, label: mrz.format == 'TD3' ? 'Passport' : 'ID document');
+        : ScanPage(
+            photo,
+            corners,
+            label: mrz.format == 'TD3' ? context.l10n.pageLabelPassport : context.l10n.pageLabelIdDocument,
+          );
     final save = await _away(
       () => Navigator.of(context).push<bool>(
         MaterialPageRoute(
@@ -284,12 +310,14 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   }
 
   /// Returns every kept page to the host (review "Save as PDF", "Save Book", "Save PDF").
-  void _finish() => Navigator.of(context).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages)));
+  void _finish() =>
+      Navigator.of(context).pop(ScanResult(List.of(session.pages), title: scanTitle(session.pages, context.l10n)));
 
-  /// A result card (QR, measure, count): see [_savePages].
+  /// A result card (QR, measure, count; its [ScanPage.kind] set): see [_savePages].
   Future<bool> _saveResult(ScanPage page, String title) => _savePages([page], title);
 
-  /// Result cards (math, QR, measure, count) join the scan as pages, then the user picks: add another (stay on the
+  /// Result cards (math, QR, measure, count; [ScanPage.kind] set) join the scan as pages under [title], then the user
+  /// picks: add another (stay on the
   /// camera), review the pages, or save the PDF. Closes any sheet or screen over the camera first. Returns true when
   /// the user left the camera (saved, or went to review, which resumes the camera itself).
   Future<bool> _savePages(List<ScanPage> pages, String title) async {
@@ -307,7 +335,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     }
     if (!mounted) return true;
     prompting = true;
-    final action = await showAddedSheet(context, title: title, pages: session.pages.length);
+    final action = await showAddedSheet(context, kind: pages.first.kind, title: title, pages: session.pages.length);
     prompting = false;
     lastCodeClosed = DateTime.now(); // "Scan another code" mustn't reopen the code just saved while it's still in view
     if (!mounted) return true;
@@ -325,12 +353,17 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   /// Measure's Save: the AR view with the shape, area and sides as a card (see [MeasureController.exportCard]).
   Future<void> _saveMeasure() async {
+    final l = context.l10n;
     try {
       final card = await measure.exportCard(context);
       // "Measure another" starts from an empty view rather than the shape just saved.
       if (card != null && mounted && !await _saveResult(card.$1, card.$2)) await measure.clear();
     } on PlatformException catch (e) {
-      _toast(e.message ?? "Couldn't capture the measurement. Try again.");
+      _toast(switch (e.code) {
+        'AR_TIMEOUT' => l.measureCameraStopped,
+        'AR_SHAPE' => l.measureShapeChanged,
+        _ => e.message ?? l.measureCaptureFailed,
+      });
     }
   }
 
@@ -339,7 +372,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     setState(() => sheetOpen = true);
     HapticFeedback.mediumImpact();
     scanLine.stop();
-    await showQrSheet(context, QrPayload.parse(value), onSave: _saveResult);
+    await showQrSheet(context, QrPayload.parse(value, context.l10n), onSave: _saveResult);
     lastCode = value;
     lastCodeClosed = DateTime.now();
     if (!mounted) return;
@@ -349,9 +382,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   Future<void> _shoot() async {
     if (busy || preview == null || tab.mode == null || tab == ScannerTab.qr) return;
-    if (tab == ScannerTab.math && Scanner.onlineMath == null) {
-      return _toast("Solving math needs AI, which isn't set up in this app.");
-    }
+    final l = context.l10n;
+    if (tab == ScannerTab.math && Scanner.onlineMath == null) return _toast(l.mathNeedsAi);
     busy = true;
     if (tab == ScannerTab.math || tab == ScannerTab.count) {
       final kind = tab;
@@ -361,7 +393,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         final photo = (await DocScanner.capture()).path;
         kind == ScannerTab.math ? await _solvePhoto(photo) : await _openCount(photo);
       } on PlatformException catch (e) {
-        _toast('Capture failed: ${e.message}');
+        _toast(l.captureFailed('${e.message}'));
       } finally {
         busy = false;
       }
@@ -384,7 +416,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         final (left, right) = await splitSpread(shot.path, corners);
         await _openBook(shot.path, corners, left, right);
       } else if (kind == ScannerTab.idCard) {
-        final page = ScanPage(shot.path, corners, label: idBack ? 'ID back' : 'ID front', group: idGroup);
+        final label = idBack ? l.pageLabelIdBack : l.pageLabelIdFront;
+        final page = ScanPage(shot.path, corners, label: label, group: idGroup);
         unawaited(session.add(page));
         if (!idBack || idFront == null) {
           idFront = page;
@@ -397,10 +430,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
           await _openId(front, page);
         }
       } else {
-        unawaited(session.add(ScanPage(shot.path, corners, label: kind == ScannerTab.passport ? 'Passport' : null)));
+        final label = kind == ScannerTab.passport ? l.pageLabelPassport : null;
+        unawaited(session.add(ScanPage(shot.path, corners, label: label)));
       }
     } on PlatformException catch (e) {
-      _toast('Capture failed: ${e.message}');
+      _toast(l.captureFailed('${e.message}'));
     } finally {
       busy = false;
     }
@@ -408,21 +442,18 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
 
   /// Picker or reader failures (photo access denied, unreadable file) become a toast instead of failing silently.
   Future<void> _importFromGallery() async {
+    final l = context.l10n;
     try {
-      await _importFromGalleryUnguarded();
+      await _importFromGalleryUnguarded(l);
     } on PlatformException catch (e) {
       if (!mounted) return;
-      _toast(
-        e.code == 'photo_access_denied'
-            ? 'Allow photo access in Settings to import.'
-            : "Couldn't read that image. Try another one.",
-      );
+      _toast(e.code == 'photo_access_denied' ? l.photoAccessDenied : l.imageUnreadable);
     } on FileSystemException {
-      if (mounted) _toast("Couldn't open that image. Try another one.");
+      if (mounted) _toast(l.imageOpenFailed);
     }
   }
 
-  Future<void> _importFromGalleryUnguarded() async {
+  Future<void> _importFromGalleryUnguarded(ScannerLocalizations l) async {
     final picker = ImagePicker();
     final mode = tab.mode ?? ScanMode.document;
     if (tab == ScannerTab.qr || tab == ScannerTab.passport || tab == ScannerTab.math || tab == ScannerTab.count) {
@@ -432,32 +463,33 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       if (tab == ScannerTab.count) return _openCount(file.path);
       final d = await DocScanner.analyzeFile(file.path, mode);
       if (tab == ScannerTab.qr) {
-        if (d.codes.isEmpty) return _toast('No code found in that image');
+        if (d.codes.isEmpty) return _toast(l.noCodeInImage);
         lastCode = null;
         return _showQr(d.codes.first.value);
       }
       final sorted = [...d.lines]..sort((a, b) => a.box.top.compareTo(b.box.top));
       final mrz = Mrz.find([for (final l in sorted) l.text]);
-      if (mrz == null) return _toast('No readable MRZ in that image. Try a sharper photo.');
+      if (mrz == null) return _toast(l.noMrzInImage);
       final page = await DocScanner.analyzeFile(file.path, ScanMode.document);
       return _presentMrz(mrz, file.path, page.corners);
     }
 
-    if (await _importPages(mode)) await _openPages();
+    if (await _importPages(mode, l)) await _openPages();
   }
 
   /// Adds gallery photos as pages (book spreads are split, ID photos pair up front / back). False if none picked.
-  Future<bool> _importPages(ScanMode mode) async {
+  Future<bool> _importPages(ScanMode mode, ScannerLocalizations l) async {
     final files = await ImagePicker().pickMultiImage(requestFullMetadata: false);
     if (files.isEmpty) return false;
     for (final (i, f) in files.indexed) {
       final corners = (await DocScanner.analyzeFile(f.path, mode)).corners;
       if (tab == ScannerTab.book) {
         final (left, right) = await splitSpread(f.path, corners);
-        unawaited(session.add(ScanPage(f.path, left, label: 'Left')));
-        unawaited(session.add(ScanPage(f.path, right, label: 'Right')));
+        unawaited(session.add(ScanPage(f.path, left, label: l.pageLabelLeft)..spreadStart = true));
+        unawaited(session.add(ScanPage(f.path, right, label: l.pageLabelRight)));
       } else if (tab == ScannerTab.idCard) {
-        unawaited(session.add(ScanPage(f.path, corners, label: i.isEven ? 'ID front' : 'ID back', group: idGroup)));
+        final label = i.isEven ? l.pageLabelIdFront : l.pageLabelIdBack;
+        unawaited(session.add(ScanPage(f.path, corners, label: label, group: idGroup)));
       } else {
         unawaited(session.add(ScanPage(f.path, corners)));
       }
@@ -508,7 +540,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     ).push<ScanPage>(MaterialPageRoute(builder: (_) => CountScreen(photo: photo)));
     away = false;
     if (!mounted) return;
-    if (page != null && await _saveResult(page, page.label ?? 'Count')) return; // saved, or review resumes the camera
+    // Saved, or review resumes the camera itself. The count's label is its title ("Count: 12").
+    if (page != null && await _saveResult(page, page.label!)) return;
     if (mounted) _start();
   }
 
@@ -519,7 +552,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         MaterialPageRoute(
           builder: (_) => PagesScreen(
             session: session,
-            onAddFromPhotos: () => _importPages(tab.quad ? tab.mode! : ScanMode.document),
+            onAddFromPhotos: () => _importPages(tab.quad ? tab.mode! : ScanMode.document, context.l10n),
           ),
         ),
       ),
@@ -534,10 +567,10 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       final discard = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-          title: Text('Discard $n scanned page${n == 1 ? '' : 's'}?'),
+          title: Text(c.l10n.discardPages(n)),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Keep scanning')),
-            TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Discard')),
+            TextButton(onPressed: () => Navigator.pop(c, false), child: Text(c.l10n.keepScanning)),
+            TextButton(onPressed: () => Navigator.pop(c, true), child: Text(c.l10n.discard)),
           ],
         ),
       );
@@ -596,10 +629,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   /// Figma camera controls: 52 pt, 20 pt sides. Document: close · flash, grid, AUTO · settings. Other modes:
   /// close · title · flash.
   Widget _topBar() {
-    final close = ChipButton(icon: IconsaxPlusLinear.add, label: 'Close', onTap: _close, size: 24, angle: math.pi / 4);
+    final l = context.l10n;
+    final close = ChipButton(icon: IconsaxPlusLinear.add, label: l.close, onTap: _close, size: 24, angle: math.pi / 4);
     final torchButton = ChipButton(
       icon: torch ? Icons2.flashOn : Icons2.flash,
-      label: torch ? 'Flash on' : 'Flash off',
+      label: torch ? l.flashOn : l.flashOff,
       color: torch ? Tone.auto : null,
       onTap: () {
         setState(() => torch = !torch);
@@ -619,14 +653,14 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                   const SizedBox(width: 10),
                   ChipButton(
                     icon: IconsaxPlusLinear.grid_1,
-                    label: grid ? 'Hide grid' : 'Show grid',
+                    label: grid ? l.hideGrid : l.showGrid,
                     color: grid ? Tone.auto : null,
                     onTap: () => setState(() => grid = !grid),
                   ),
                   const SizedBox(width: 10),
                   _autoButton(),
                   const Spacer(),
-                  ChipButton(icon: IconsaxPlusLinear.setting_2, label: 'Settings', onTap: () {}),
+                  ChipButton(icon: IconsaxPlusLinear.setting_2, label: l.settings, onTap: () {}),
                 ],
               )
             : Row(
@@ -636,7 +670,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                     child: AnimatedSwitcher(
                       duration: fast,
                       child: Text(
-                        tab.title,
+                        tab.title(context),
                         key: ValueKey(tab),
                         textAlign: TextAlign.center,
                         style: TextStyles.headline.copyWith(color: Colors.white),
@@ -651,7 +685,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   }
 
   Widget _autoButton() => Pressable(
-    label: auto ? 'Auto capture on' : 'Auto capture off',
+    label: auto ? context.l10n.autoCaptureOn : context.l10n.autoCaptureOff,
     onTap: () {
       HapticFeedback.selectionClick();
       setState(() => auto = !auto);
@@ -666,7 +700,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
           color: auto ? Tone.auto : Colors.white.withValues(alpha: .7),
           letterSpacing: .6,
         ),
-        child: const Text('AUTO'),
+        child: Text(context.l10n.autoBadge),
       ),
     ),
   );
@@ -799,7 +833,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
           final r = bookGuide(box.biggest);
           return Stack(
             children: [
-              for (final (i, text) in ['Left · $n', 'Right · ${n + 1}'].indexed)
+              for (final (i, text) in [context.l10n.bookChipLeft(n), context.l10n.bookChipRight(n + 1)].indexed)
                 Positioned(
                   top: r.bottom + 20,
                   left: r.left + r.width * (i == 0 ? 0 : .5),
@@ -820,10 +854,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     ),
     if (error == null) ...[
       CustomPaint(
-        painter: MeasurePainter(measure),
+        painter: MeasurePainter(measure, areaLabel: context.l10n.area),
         child: ListenableBuilder(
           listenable: measure,
-          builder: (_, _) => Semantics(liveRegion: true, label: measure.summary, child: const SizedBox.expand()),
+          builder: (context, _) =>
+              Semantics(liveRegion: true, label: measure.summary(context.l10n), child: const SizedBox.expand()),
         ),
       ),
       // Pill sits just above the reticle, as in Figma 7.6.
@@ -835,8 +870,8 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: ListenableBuilder(
               listenable: measure,
-              builder: (_, _) {
-                final h = measure.hint;
+              builder: (context, _) {
+                final h = measure.hint(context.l10n);
                 return h == null ? const SizedBox() : StatusPill(icon: h.$1, text: h.$2);
               },
             ),
@@ -881,12 +916,13 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   );
 
   Future<void> _addPoint() async {
-    if (!await measure.add(viewSize)) _toast('Point the circle at a surface first');
+    final l = context.l10n;
+    if (!await measure.add(viewSize)) _toast(l.pointAtSurfaceFirst);
   }
 
   /// "1  Front side | 2  Back side" switch (Figma 7.1).
   Widget _sides() {
-    Widget side(int n, String label, bool back) {
+    Widget side(String label, bool back) {
       final on = idBack == back;
       return GestureDetector(
         onTap: () => setState(() {
@@ -905,7 +941,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             style: TextStyles.footnoteSemibold.copyWith(
               color: on ? const Color(0xFF0E1116) : Colors.white.withValues(alpha: .7),
             ),
-            child: Text('$n  $label'),
+            child: Text(label),
           ),
         ),
       );
@@ -916,73 +952,70 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
       decoration: BoxDecoration(color: Tone.chip, borderRadius: BorderRadius.circular(18)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [side(1, 'Front side', false), const SizedBox(width: 6), side(2, 'Back side', true)],
+        children: [
+          side(context.l10n.idSideFront, false),
+          const SizedBox(width: 6),
+          side(context.l10n.idSideBack, true),
+        ],
       ),
     );
   }
 
   Widget _pill() {
+    final l = context.l10n;
     const info = IconsaxPlusLinear.info_circle;
     const ok = IconsaxPlusLinear.tick_circle;
     switch (tab) {
       case ScannerTab.qr:
-        return const StatusPill(icon: IconsaxPlusLinear.scan_barcode, text: 'Point at a QR code or barcode');
+        return StatusPill(icon: IconsaxPlusLinear.scan_barcode, text: l.pillQr);
       case ScannerTab.count:
-        return const StatusPill(icon: IconsaxPlusLinear.shapes, text: 'Point at the objects, then tap the shutter');
+        return StatusPill(icon: IconsaxPlusLinear.shapes, text: l.pillCount);
       case ScannerTab.math:
-        if (Scanner.onlineMath == null) {
-          return const StatusPill(icon: info, text: "Solving math needs AI, which isn't set up");
-        }
-        return const StatusPill(
-          icon: IconsaxPlusLinear.calculator,
-          text: 'Point at a math problem, then tap the shutter',
-        );
+        if (Scanner.onlineMath == null) return StatusPill(icon: info, text: l.pillMathOff);
+        return StatusPill(icon: IconsaxPlusLinear.calculator, text: l.pillMath);
       case ScannerTab.passport:
         return mrzHits > 0
-            ? const StatusPill(icon: ok, text: 'MRZ detected · Hold steady', color: Tone.success)
-            : const StatusPill(icon: info, text: 'Place the photo page inside the frame');
+            ? StatusPill(icon: ok, text: l.pillMrzDetected, color: Tone.success)
+            : StatusPill(icon: info, text: l.pillPassport);
       case ScannerTab.idCard:
         if (!armed && state != QuadState.searching) {
-          return StatusPill(icon: ok, text: idBack ? 'Front saved · Flip the card' : 'Saved', color: Tone.success);
+          return StatusPill(icon: ok, text: idBack ? l.pillIdFrontSaved : l.pillSaved, color: Tone.success);
         }
         if (state == QuadState.searching) {
-          return StatusPill(icon: info, text: idBack ? 'Now scan the back side' : 'Fit the card inside the frame');
+          return StatusPill(icon: info, text: idBack ? l.pillIdBack : l.pillIdFit);
         }
-        return const StatusPill(icon: ok, text: 'Card detected · Hold still', color: Tone.success);
+        return StatusPill(icon: ok, text: l.pillCardDetected, color: Tone.success);
       case ScannerTab.book:
         if (state == QuadState.searching) {
-          return const StatusPill(icon: IconsaxPlusLinear.book_1, text: 'Point at an open book');
+          return StatusPill(icon: IconsaxPlusLinear.book_1, text: l.pillBook);
         }
         // Figma 9.1 says "Curves flattened · pages split automatically"; the engine splits pages but doesn't
         // flatten curls yet, so the pill only claims the split.
         return StatusPill(
           icon: IconsaxPlusLinear.magicpen,
-          text: auto ? 'Book detected · Pages split automatically' : 'Book detected · Tap to capture',
+          text: auto ? l.pillBookAuto : l.pillBookTap,
           color: armed ? Tone.pill : Tone.success,
         );
       default:
         if (!armed && state != QuadState.searching) {
-          return const StatusPill(icon: ok, text: 'Captured · Place the next page', color: Tone.success);
+          return StatusPill(icon: ok, text: l.pillCaptured, color: Tone.success);
         }
         if (state == QuadState.searching) {
-          return const StatusPill(icon: IconsaxPlusLinear.scan, text: 'Point at a document');
+          return StatusPill(icon: IconsaxPlusLinear.scan, text: l.pillDocument);
         }
-        return StatusPill(
-          icon: ok,
-          text: auto ? 'Document detected · Hold still' : 'Document detected · Tap to capture',
-          color: Tone.success,
-        );
+        return StatusPill(icon: ok, text: auto ? l.pillDocumentAuto : l.pillDocumentTap, color: Tone.success);
     }
   }
 
   Widget _errorView(String code) {
+    final l = context.l10n;
     final denied = code == 'PERMISSION_DENIED';
     final (title, body) = switch (code) {
-      'PERMISSION_DENIED' => ('Camera access is off', 'Allow camera access to scan documents.'),
-      'AR_UNSUPPORTED' => ("AR isn't available on this phone", 'Measuring needs Google Play Services for AR.'),
-      'AR_INSTALL' => ('Install AR support', 'Finish installing Google Play Services for AR, then try again.'),
-      _ when tab == ScannerTab.measure => ("AR couldn't start", 'Something went wrong starting the AR camera.'),
-      _ => ('Camera unavailable', 'Something went wrong starting the camera.'),
+      'PERMISSION_DENIED' => (l.cameraOffTitle, l.cameraOffBody),
+      'AR_UNSUPPORTED' => (l.arUnsupportedTitle, l.arUnsupportedBody),
+      'AR_INSTALL' => (l.arInstallTitle, l.arInstallBody),
+      _ when tab == ScannerTab.measure => (l.arFailedTitle, l.arFailedBody),
+      _ => (l.cameraFailedTitle, l.cameraFailedBody),
     };
     return Center(
       child: Padding(
@@ -1007,7 +1040,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             SizedBox(
               width: 200,
               child: ScanButton(
-                denied ? 'Open Settings' : 'Try again',
+                denied ? l.openSettings : l.tryAgain,
                 onPressed: denied ? DocScanner.openSettings : _start,
               ),
             ),
@@ -1037,7 +1070,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                 : Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      _squareButton(IconsaxPlusLinear.gallery, 'Import from gallery', _importFromGallery),
+                      _squareButton(IconsaxPlusLinear.gallery, context.l10n.importFromGallery, _importFromGallery),
                       if (tab == ScannerTab.qr) const SizedBox.square(dimension: 78) else _shutter(),
                       SizedBox.square(dimension: 48, child: _stack()),
                     ],
@@ -1071,7 +1104,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                         style: t == tab
                             ? TextStyles.footnoteSemibold.copyWith(color: Colors.white)
                             : TextStyles.footnoteMedium.copyWith(color: Tone.muted),
-                        child: Text(t.label),
+                        child: Text(t.label(context)),
                       ),
                       const SizedBox(height: 4),
                       AnimatedScale(
@@ -1111,7 +1144,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     final found = (tab.quad && state != QuadState.searching && armed) || (tab == ScannerTab.passport && mrzHits > 0);
     return Semantics(
       button: true,
-      label: 'Capture',
+      label: context.l10n.capture,
       enabled: enabled,
       child: Pressable(
         onTap: enabled ? _shoot : null,
@@ -1143,7 +1176,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
             ? const SizedBox()
             : Semantics(
                 button: true,
-                label: 'Review ${pages.length} page${pages.length == 1 ? '' : 's'}',
+                label: context.l10n.reviewPages(pages.length),
                 child: GestureDetector(
                   onTap: _openPages,
                   child: Stack(

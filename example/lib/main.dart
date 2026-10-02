@@ -6,11 +6,7 @@ import 'package:flutter_doc_scanner/flutter_doc_scanner.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]); // the scanner UI is portrait-only
-  runApp(const MaterialApp(
-    title: 'Scanner example',
-    debugShowCheckedModeBanner: false,
-    home: Home(),
-  ));
+  runApp(const MaterialApp(title: 'Scanner example', debugShowCheckedModeBanner: false, home: Home()));
 }
 
 class Home extends StatefulWidget {
@@ -26,23 +22,28 @@ class _HomeState extends State<Home> {
   Future<void> _scan(ScannerTab tab) async {
     final result = await Scanner.open(context, tab: tab);
     if (!mounted) return;
-    setState(() => status = result == null
-        ? 'Closed without scanning'
-        : '"${result.title}": ${result.pages.length} page(s)${result.pdf == null ? '' : ', PDF ${result.pdf!.path}'}');
+    setState(
+      () => status = result == null
+          ? 'Closed without scanning'
+          : '"${result.title}": ${result.pages.length} page(s)${result.pdf == null ? '' : ', PDF ${result.pdf!.path}'}',
+    );
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Scanner module')),
-        body: ListView(padding: const EdgeInsets.all(16), children: [
-          Text(status),
-          const SizedBox(height: 16),
-          for (final tab in ScannerTab.values)
-            ListTile(
-              leading: const Icon(Icons.document_scanner_outlined),
-              title: Text(tab.title),
-              onTap: () => _scan(tab),
-            ),
-        ]),
-      );
+    appBar: AppBar(title: const Text('Scanner module')),
+    body: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(status),
+        const SizedBox(height: 16),
+        for (final tab in ScannerTab.values)
+          ListTile(
+            leading: const Icon(Icons.document_scanner_outlined),
+            title: Text(tab.title(context)),
+            onTap: () => _scan(tab),
+          ),
+      ],
+    ),
+  );
 }
